@@ -459,6 +459,8 @@ fn projection_source_changed() -> ApiError {
 }
 
 fn projection_budget(kind: &str) -> ApiError {
+    // MadameLabs: registra qual orcamento estourou (o upstream so devolve na resposta).
+    tracing::warn!(budget_kind = kind, "hosted execution budget exceeded");
     ApiError::new(
         StatusCode::UNPROCESSABLE_ENTITY,
         "hosted_execution_budget_exceeded",
