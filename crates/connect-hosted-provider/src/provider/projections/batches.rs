@@ -250,7 +250,7 @@ impl HostedProvider {
                 }
             };
             let bytes_len = bytes.len() as u64;
-            if bytes_len > 262_144 {
+            if bytes_len > 1_048_576 { // MadameLabs: era 262_144
                 abandon_projection_generation_for_terminal_error(
                     &mut transaction,
                     collection_id,
@@ -264,7 +264,7 @@ impl HostedProvider {
                 transaction.commit().await?;
                 return Err(projection_record_too_large(
                     "semantic_projection_bytes",
-                    262_144,
+                    1_048_576, // MadameLabs: era 262_144
                     bytes_len,
                 ));
             }
@@ -706,7 +706,7 @@ impl HostedProvider {
                     return Err(error);
                 }
             };
-            if bytes.len() > 262_144 {
+            if bytes.len() > 1_048_576 { // MadameLabs: era 262_144
                 let observed = bytes.len() as u64;
                 abandon_projection_generation_for_terminal_error(
                     &mut transaction,
@@ -721,7 +721,7 @@ impl HostedProvider {
                 transaction.commit().await?;
                 return Err(projection_record_too_large(
                     "semantic_projection_bytes",
-                    262_144,
+                    1_048_576, // MadameLabs: era 262_144
                     observed,
                 ));
             }
