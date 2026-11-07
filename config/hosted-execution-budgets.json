@@ -116,9 +116,9 @@
   },
   "authorityBulk": {
     "records": 100000,
-    "exactBytes": 22369621,
+    "exactBytes": 268435456,
     "resourceBytes": 8388608,
-    "estimatedPlaintextBytes": 100663296
+    "estimatedPlaintextBytes": 1073741824
   },
   "acceptance": {
     "steadyProcessRssBytes": 402653184,

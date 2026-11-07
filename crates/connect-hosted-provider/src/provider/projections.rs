@@ -5,8 +5,8 @@ const PROJECTION_LEASE_SECONDS: i64 = 30;
 const MAX_PROJECTION_BATCH: u64 = 200;
 const MAX_PROJECTION_BATCH_CIPHERTEXT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RESOLUTION_BATCH_PROJECTION_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_RELATIONSHIP_REVALIDATION_RECORDS: usize = 200;
-const MAX_RELATIONSHIP_REVALIDATION_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_RELATIONSHIP_REVALIDATION_RECORDS: usize = 5_000; // MadameLabs: era 200; bases com hubs citados por centenas de notas (marca, pessoa)
+const MAX_RELATIONSHIP_REVALIDATION_BYTES: u64 = 256 * 1024 * 1024; // MadameLabs: era 32 MiB
 const MAX_RETAINED_PROJECTION_GENERATIONS: i64 = 4;
 /// Rebuild batches hold the collection row lock, which every record write and
 /// the migration fence wait on under a 5 s `lock_timeout`. A batch stops at this
