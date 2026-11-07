@@ -474,7 +474,7 @@ async fn insert_active_projection_version(
     canonical_bytes: &[u8],
     close_relationships: bool,
 ) -> ApiResult<()> {
-    if canonical_bytes.len() > 262_144 {
+    if canonical_bytes.len() > 1_048_576 { // MadameLabs: era 262_144
         return Err(projection_budget("projection_bytes"));
     }
     let record = change
@@ -594,7 +594,7 @@ async fn persist_active_resolved_projection(
     projection: &mdbase::runtime::SemanticProjection,
     canonical_bytes: &[u8],
 ) -> ApiResult<()> {
-    if canonical_bytes.len() > 262_144 {
+    if canonical_bytes.len() > 1_048_576 { // MadameLabs: era 262_144
         return Err(projection_budget("projection_bytes"));
     }
     let projection_value: Value = serde_json::from_slice(canonical_bytes).map_err(|error| {
