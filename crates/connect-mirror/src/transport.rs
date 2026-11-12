@@ -447,7 +447,13 @@ impl HttpSyncTransport {
                     )
                     .await?;
                 validate_prepared_part(&prepared, request.transfer_id, index, offset, length)?;
-                let mut upload = self.client.put(&prepared.url).body(bytes.clone());
+                // R2 recusa PUT sem Content-Length (HTTP 411), e o hyper omite o
+                // cabeçalho quando o corpo é vazio: arquivo de 0 byte travava o espelho.
+                let mut upload = self
+                    .client
+                    .put(&prepared.url)
+                    .header(reqwest::header::CONTENT_LENGTH, length)
+                    .body(bytes.clone());
                 for (name, value) in prepared.headers {
                     if matches!(
                         name.to_ascii_lowercase().as_str(),
