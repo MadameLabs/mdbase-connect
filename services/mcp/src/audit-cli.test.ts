@@ -19,6 +19,21 @@ describe("buildAuditQuery", () => {
     expect(query.text).not.toContain("2026-11-13");
   });
 
+  it("ate com data simples inclui o dia inteiro", () => {
+    const query = buildAuditQuery({ ate: "2026-11-13" });
+
+    expect(query.values).toEqual(["2026-11-13", 50]);
+    expect(query.text).toContain("created_at < ($1::date + interval '1 day')::timestamptz");
+    expect(query.text).not.toContain("created_at <= $1");
+  });
+
+  it("ate com timestamp completo mantém comparação inclusiva", () => {
+    const query = buildAuditQuery({ ate: "2026-11-13T12:00:00Z" });
+
+    expect(query.values).toEqual(["2026-11-13T12:00:00Z", 50]);
+    expect(query.text).toContain("created_at <= $1");
+  });
+
   it("limite acima de 1000 é limitado a 1000", () => {
     const query = buildAuditQuery({ limite: 5000 });
 
@@ -54,6 +69,14 @@ describe("runAuditQuery contra o banco", () => {
     const linhas = enola.trim().split("\n").slice(1);
     expect(linhas).toHaveLength(1);
     expect(linhas[0]).toContain("Enola\tupdate_record\t00-conhecimento/backlog.md\t\tok\t\tr2");
+
+    await db.query(
+      "INSERT INTO mcp_write_audit (created_at, client_id, connection_set_id, connection_id, tool, path, request_id, outcome) VALUES ('2026-11-13T15:00:00Z', 'c1', 's', 'k', 'create_record', 'dia.md', 'req-dia', 'ok')"
+    );
+    const diaInteiro = await runAuditQuery(db, { ate: "2026-11-13" });
+    expect(diaInteiro).toContain("dia.md");
+    const ateMeiaNoite = await runAuditQuery(db, { ate: "2026-11-13T00:00:00Z" });
+    expect(ateMeiaNoite).not.toContain("dia.md");
 
     const hoje = await runAuditQuery(db, { desde: "2000-01-01", limite: 1 });
     expect(hoje.trim().split("\n")).toHaveLength(2);
