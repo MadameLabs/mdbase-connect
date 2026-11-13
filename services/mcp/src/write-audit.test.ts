@@ -84,6 +84,26 @@ describe("write audit", () => {
     await client.close();
   });
 
+  it("falha ao fechar o registro não troca o recibo de uma escrita concluída", async () => {
+    const gateway = { operation: vi.fn(async () => ({ revision: "r2" })) };
+    const audit = fakeAudit({ finish: vi.fn(async () => { throw new Error("banco caiu"); }) });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const client = await connect(gateway, audit);
+
+    const result = await client.callTool({
+      name: "create_record",
+      arguments: { connection_id: CONN, path: "a.md", body: "x" }
+    });
+
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(payload.mutation_receipt.request_id).toEqual(expect.any(String));
+    expect(payload.outcome).toEqual({ revision: "r2" });
+    expect(errorSpy).toHaveBeenCalledWith("write audit finish failed", expect.objectContaining({ auditId: "42", message: "banco caiu" }));
+    errorSpy.mockRestore();
+    await client.close();
+  });
+
   it("rename registra from e to", async () => {
     const gateway = { operation: vi.fn(async () => ({ revision: "r3" })) };
     const audit = fakeAudit();
