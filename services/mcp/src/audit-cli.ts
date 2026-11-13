@@ -13,6 +13,10 @@ export interface AuditFilters {
 const LIMITE_PADRAO = 50;
 const LIMITE_MAXIMO = 1000;
 
+function isDataSimples(valor: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(valor);
+}
+
 export function buildAuditQuery(filters: AuditFilters): { text: string; values: unknown[] } {
   const conditions: string[] = [];
   const values: unknown[] = [];
@@ -33,7 +37,12 @@ export function buildAuditQuery(filters: AuditFilters): { text: string; values: 
     conditions.push(`created_at >= ${add(filters.desde)}`);
   }
   if (filters.ate !== undefined) {
-    conditions.push(`created_at <= ${add(filters.ate)}`);
+    const ref = add(filters.ate);
+    conditions.push(
+      isDataSimples(filters.ate)
+        ? `created_at < (${ref}::date + interval '1 day')::timestamptz`
+        : `created_at <= ${ref}`
+    );
   }
 
   const limite = Math.min(Math.max(Math.trunc(filters.limite ?? LIMITE_PADRAO), 1), LIMITE_MAXIMO);
