@@ -162,6 +162,26 @@ export async function migrate(db: DatabaseQueryable): Promise<void> {
   await db.query(
     "ALTER TABLE mcp_grant_keys ADD COLUMN IF NOT EXISTS signing_private_key_ciphertext text"
   );
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS mcp_write_audit (
+      id bigserial PRIMARY KEY,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz,
+      client_id text NOT NULL,
+      client_name text,
+      connection_set_id text NOT NULL,
+      connection_id text NOT NULL,
+      tool text NOT NULL,
+      path text,
+      to_path text,
+      request_id text NOT NULL,
+      outcome text NOT NULL DEFAULT 'pending' CHECK (outcome IN ('pending', 'ok', 'error')),
+      error_code text,
+      revision text
+    );
+    CREATE INDEX IF NOT EXISTS mcp_write_audit_client_created_idx ON mcp_write_audit (client_id, created_at);
+    CREATE INDEX IF NOT EXISTS mcp_write_audit_path_idx ON mcp_write_audit (path);
+  `);
   // Retain the unused legacy column until the previous release is outside the
   // production rollback window. Runtime compatibility is not a license for a
   // destructive deploy-time migration.

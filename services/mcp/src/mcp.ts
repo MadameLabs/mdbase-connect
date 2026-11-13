@@ -5,6 +5,7 @@ import { normalizeCollectionChange } from "@mdbase-dev/connect";
 import { z } from "zod";
 import { ConnectGateway, GatewayOperationError } from "./connect.js";
 import { OAuthService, type McpAuthContext } from "./oauth.js";
+import type { WriteAudit, WriteOutcome, WriteTool } from "./write-audit.js";
 
 const connectionId = z.uuid().describe("Opaque connection ID returned by list_connections");
 const path = z.string().min(1).max(1_024).describe("Collection-relative record path");
@@ -15,7 +16,8 @@ const object = z.record(z.string(), z.unknown());
 export function createMcpServer(
   context: McpAuthContext,
   gateway: ConnectGateway,
-  oauth: OAuthService
+  oauth: OAuthService,
+  audit: WriteAudit
 ): McpServer {
   const server = new McpServer({ name: "mdbase", version: "0.1.0-beta.152" });
 
@@ -140,11 +142,11 @@ export function createMcpServer(
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, ({ connection_id, ...input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "read_type", input, { signal }));
 
-  if (context.scopes.includes("mdbase:write")) registerWriteTools(server, context, gateway, oauth);
+  if (context.scopes.includes("mdbase:write")) registerWriteTools(server, context, gateway, oauth, audit);
   return server;
 }
 
-function registerWriteTools(server: McpServer, context: McpAuthContext, gateway: ConnectGateway, oauth: OAuthService): void {
+function registerWriteTools(server: McpServer, context: McpAuthContext, gateway: ConnectGateway, oauth: OAuthService, audit: WriteAudit): void {
   const updateRecordInput = z.object({
     connection_id: connectionId,
     path,
@@ -171,7 +173,8 @@ function registerWriteTools(server: McpServer, context: McpAuthContext, gateway:
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
-    gateway, oauth, context, connection_id, "create", input, mutation_id, signal
+    gateway, oauth, context, connection_id, "create", input, mutation_id, signal,
+    audit, "create_record", { path: input.path ?? null, toPath: null }
   ));
 
   server.registerTool("update_record", {
@@ -180,7 +183,8 @@ function registerWriteTools(server: McpServer, context: McpAuthContext, gateway:
     inputSchema: updateRecordInput,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
-    gateway, oauth, context, connection_id, "update", input, mutation_id, signal
+    gateway, oauth, context, connection_id, "update", input, mutation_id, signal,
+    audit, "update_record", { path: input.path, toPath: null }
   ));
 
   server.registerTool("delete_record", {
@@ -195,7 +199,8 @@ function registerWriteTools(server: McpServer, context: McpAuthContext, gateway:
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
-    gateway, oauth, context, connection_id, "delete", input, mutation_id, signal
+    gateway, oauth, context, connection_id, "delete", input, mutation_id, signal,
+    audit, "delete_record", { path: input.path, toPath: null }
   ));
 
   server.registerTool("rename_record", {
@@ -211,7 +216,8 @@ function registerWriteTools(server: McpServer, context: McpAuthContext, gateway:
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
-    gateway, oauth, context, connection_id, "rename", input, mutation_id, signal
+    gateway, oauth, context, connection_id, "rename", input, mutation_id, signal,
+    audit, "rename_record", { path: input.from, toPath: input.to }
   ));
 
   server.registerTool("create_type", {
@@ -225,7 +231,8 @@ function registerWriteTools(server: McpServer, context: McpAuthContext, gateway:
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
-    gateway, oauth, context, connection_id, "create_type", input, mutation_id, signal
+    gateway, oauth, context, connection_id, "create_type", input, mutation_id, signal,
+    audit, "create_type", { path: input.path ?? null, toPath: null }
   ));
 
   server.registerTool("update_type", {
@@ -241,11 +248,12 @@ function registerWriteTools(server: McpServer, context: McpAuthContext, gateway:
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
-    gateway, oauth, context, connection_id, "update_type", input, mutation_id, signal
+    gateway, oauth, context, connection_id, "update_type", input, mutation_id, signal,
+    audit, "update_type", { path: input.path ?? input.name ?? null, toPath: null }
   ));
 }
 
-function mutationOperationTool(
+async function mutationOperationTool(
   gateway: ConnectGateway,
   oauth: OAuthService,
   context: McpAuthContext,
@@ -253,14 +261,44 @@ function mutationOperationTool(
   operation: CollectionOperation,
   input: unknown,
   mutationId: string | undefined,
-  signal: AbortSignal
+  signal: AbortSignal,
+  audit: WriteAudit,
+  tool: WriteTool,
+  paths: { path: string | null; toPath: string | null }
 ) {
   const requestId = mutationId ?? randomUUID();
-  return operationTool(gateway, oauth, context, connectionId, operation, input, {
+  let auditId: string;
+  try {
+    auditId = await audit.begin({
+      clientId: context.clientId,
+      connectionSetId: context.connectionSetId,
+      connectionId,
+      tool,
+      path: paths.path,
+      toPath: paths.toPath,
+      requestId
+    });
+  } catch {
+    return {
+      ...toolResult({
+        error: {
+          code: "audit_unavailable",
+          message: "The write was not run because it could not be recorded.",
+          request_id: requestId
+        }
+      }),
+      isError: true
+    };
+  }
+  let outcome: WriteOutcome = { ok: false, errorCode: "operation_failed" };
+  const result = await operationTool(gateway, oauth, context, connectionId, operation, input, {
     signal,
     requestId,
-    mutationReceipt: true
+    mutationReceipt: true,
+    onSettled: (settled) => { outcome = settled; }
   });
+  await audit.finish(auditId, outcome);
+  return result;
 }
 
 async function operationTool(
@@ -270,7 +308,7 @@ async function operationTool(
   connectionId: string,
   operation: CollectionOperation,
   input: unknown,
-  options: { signal?: AbortSignal; requestId?: string; mutationReceipt?: boolean } = {}
+  options: { signal?: AbortSignal; requestId?: string; mutationReceipt?: boolean; onSettled?: (outcome: WriteOutcome) => void } = {}
 ) {
   try {
     const value = await gateway.operation(
@@ -285,6 +323,7 @@ async function operationTool(
       if (!Array.isArray(page?.events)) throw new GatewayOperationError("invalid_operation_response", "Invalid changes page.");
       return toolResult({ ...page, typed_events: page.events.map(normalizeCollectionChange) });
     }
+    options.onSettled?.({ ok: true, revision: revisionOf(value) });
     return toolResult(options.mutationReceipt ? {
       mutation_receipt: {
         request_id: options.requestId,
@@ -293,6 +332,7 @@ async function operationTool(
       outcome: value
     } : value);
   } catch (error) {
+    options.onSettled?.({ ok: false, errorCode: error instanceof GatewayOperationError ? error.code : "operation_failed" });
     // A grant that could not take a Noise key silently: one-click re-approval link.
     if (error instanceof GatewayOperationError && error.code === "reconnect_required") {
       const authorizationUrl = await oauth.createConnectionTicket(context, connectionId).catch(() => null);
@@ -336,4 +376,9 @@ function toolResult(value: unknown) {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function revisionOf(value: unknown): string | null {
+  const revision = isObject(value) ? value.revision : undefined;
+  return typeof revision === "string" ? revision : null;
 }
