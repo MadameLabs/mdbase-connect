@@ -12,6 +12,7 @@ import { ConnectGateway } from "./connect.js";
 import { createMcpServer } from "./mcp.js";
 import { MCP_SCOPES, OAuthError, OAuthService } from "./oauth.js";
 import { verifyMasterKey } from "./security.js";
+import { createPgWriteAudit } from "./write-audit.js";
 
 interface BuildOptions {
   db: DatabasePool;
@@ -65,6 +66,7 @@ export async function buildApp(options: BuildOptions) {
   }, 5 * 60_000);
   pruning.unref();
   app.addHook("onClose", async () => clearInterval(pruning));
+  const writeAudit = createPgWriteAudit(options.db);
   const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource/mcp`;
 
   await app.register(formbody);
@@ -188,7 +190,7 @@ export async function buildApp(options: BuildOptions) {
   app.post("/mcp", async (request, reply) => {
     const context = await authenticateRequest(request.headers.authorization, oauth);
     if (!context) return unauthorized(reply, resourceMetadataUrl);
-    const server = createMcpServer(context, gateway, oauth);
+    const server = createMcpServer(context, gateway, oauth, writeAudit);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
