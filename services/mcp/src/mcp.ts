@@ -297,7 +297,16 @@ async function mutationOperationTool(
     mutationReceipt: true,
     onSettled: (settled) => { outcome = settled; }
   });
-  await audit.finish(auditId, outcome);
+  // The write has already run: a failed audit update must not replace its receipt.
+  try {
+    await audit.finish(auditId, outcome);
+  } catch (error) {
+    console.error("write audit finish failed", {
+      auditId,
+      errorCode: outcome.ok ? undefined : outcome.errorCode,
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
   return result;
 }
 
