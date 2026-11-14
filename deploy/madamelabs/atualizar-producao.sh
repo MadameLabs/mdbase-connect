@@ -18,13 +18,19 @@ DC=(docker compose --project-name mdbase-connect --env-file "$OPT/.env"
 passo() { printf '\n== %s\n' "$*"; }
 
 passo "0. Conferencias"
-# o codigo e o da branch madamelabs/limites-v0.1.0-beta.210, limpo
-git -C "$SRC" diff --quiet HEAD
-[ "$(git -C "$SRC" branch --show-current)" = "madamelabs/limites-v0.1.0-beta.210" ]
-git -C "$SRC" merge-base --is-ancestor "v$NOVA" HEAD
+# root lendo repositorio do mrlabs: o git recusa sem safe.directory
+G=(git --no-optional-locks -c "safe.directory=*" -C "$SRC")
+# o codigo construido e exatamente o commit revisado (beta.210 + limites +
+# CARGO_BUILD_JOBS); por cima dele, so commits em deploy/madamelabs/
+BASE=2ac094dea014423080530af4db18cde4aca63652
+"${G[@]}" diff --quiet HEAD
+[ "$("${G[@]}" branch --show-current)" = "madamelabs/limites-v0.1.0-beta.210" ]
+"${G[@]}" merge-base --is-ancestor "$BASE" HEAD
+[ -z "$("${G[@]}" diff --name-only "$BASE" HEAD -- . ':!deploy/madamelabs')" ]
+"${G[@]}" merge-base --is-ancestor "v$NOVA" HEAD
 # a producao esta na beta.156 e o compose dela e o do upstream daquela tag
 grep -qx "MDBASE_CONNECT_VERSION=$VELHA" "$OPT/.env"
-cmp -s "$OPT/compose.yml" <(git -C "$SRC" show "v$VELHA:deploy/self-host/compose.yml")
+cmp -s "$OPT/compose.yml" <("${G[@]}" show "v$VELHA:deploy/self-host/compose.yml")
 # espaco para as imagens novas
 [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20 ]
 curl -fsS -o /dev/null https://connect.madamelabs.com.br/ready
