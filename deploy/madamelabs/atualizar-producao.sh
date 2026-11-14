@@ -21,8 +21,9 @@ passo "0. Conferencias"
 # root lendo repositorio do mrlabs: o git recusa sem safe.directory
 G=(git --no-optional-locks -c "safe.directory=*" -C "$SRC")
 # o codigo construido e exatamente o commit revisado (beta.210 + limites +
-# CARGO_BUILD_JOBS); por cima dele, so commits em deploy/madamelabs/
-BASE=2ac094dea014423080530af4db18cde4aca63652
+# CARGO_BUILD_JOBS + registro de escritas do MCP); por cima dele, so commits
+# em deploy/madamelabs/
+BASE=748bf3e16dc464c09fba4d5e07e78f56184d20c3
 "${G[@]}" diff --quiet HEAD
 [ "$("${G[@]}" branch --show-current)" = "madamelabs/limites-v0.1.0-beta.210" ]
 "${G[@]}" merge-base --is-ancestor "$BASE" HEAD
@@ -31,6 +32,10 @@ BASE=2ac094dea014423080530af4db18cde4aca63652
 # a producao esta na beta.156 e o compose dela e o do upstream daquela tag
 grep -qx "MDBASE_CONNECT_VERSION=$VELHA" "$OPT/.env"
 cmp -s "$OPT/compose.yml" <("${G[@]}" show "v$VELHA:deploy/self-host/compose.yml")
+# o override prende o MCP com o registro de escritas, numa linha so
+MCP_VELHA="mdbase-connect-mcp:$VELHA-registro"
+MCP_NOVA="mdbase-connect-mcp:$NOVA-registro"
+[ "$(grep -c "image: $MCP_VELHA\$" "$OPT/override.yml")" -eq 1 ]
 # espaco para as imagens novas
 [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20 ]
 curl -fsS -o /dev/null https://connect.madamelabs.com.br/ready
@@ -60,20 +65,25 @@ done
 for img in server nats mcp hosted-provider; do
   docker image inspect "mdbase-connect-$img:$NOVA" >/dev/null
 done
+# o MCP desta branch leva o registro de escritas: mesma convencao de nome da 156
+docker tag "mdbase-connect-mcp:$NOVA" "$MCP_NOVA"
 
 passo "3. Troca: compose da beta.210 e versao nova no .env (copias .antes-$NOVA)"
 cp -a "$OPT/compose.yml" "$OPT/compose.yml.antes-$NOVA"
 cp -a "$OPT/.env" "$OPT/.env.antes-$NOVA"
+cp -a "$OPT/override.yml" "$OPT/override.yml.antes-$NOVA"
 install -m 0644 "$SRC/deploy/self-host/compose.yml" "$OPT/compose.yml"
 sed -i "s/^MDBASE_CONNECT_VERSION=.*/MDBASE_CONNECT_VERSION=$NOVA/" "$OPT/.env"
+sed -i "s|image: $MCP_VELHA\$|image: $MCP_NOVA|" "$OPT/override.yml"
 cd "$OPT"
 imagens=$("${DC[@]}" config --images | sort -u)
 echo "$imagens"
 # toda imagem nossa tem de ser a nova; o override.yml nao pode prender uma antiga
-if echo "$imagens" | grep '^mdbase-connect-' | grep -qv ":$NOVA\$"; then
+if echo "$imagens" | grep '^mdbase-connect-' | grep -Eqv ":$NOVA(-registro)?\$"; then
   echo "imagem mdbase-connect fora da $NOVA: desfazendo a troca, nada subiu" >&2
   cp -a "$OPT/compose.yml.antes-$NOVA" "$OPT/compose.yml"
   cp -a "$OPT/.env.antes-$NOVA" "$OPT/.env"
+  cp -a "$OPT/override.yml.antes-$NOVA" "$OPT/override.yml"
   exit 1
 fi
 
