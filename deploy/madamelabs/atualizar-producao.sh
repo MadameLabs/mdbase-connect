@@ -42,9 +42,21 @@ inicio=$(date +%s)
 
 passo "2. Imagens $NOVA, construidas a partir de $SRC (a producao segue no ar)"
 cd "$SRC/deploy/self-host"
-MDBASE_CONNECT_VERSION=$NOVA docker compose --project-name mdbase-connect-build \
-  --env-file "$OPT/.env" -f compose.yml --profile hosted --profile mcp \
-  build --build-arg CARGO_BUILD_JOBS=2
+# uma imagem por vez: em paralelo, os pnpm install e o cargo disputavam a rede
+# fraca do Labs e estouravam o tempo; ate 3 tentativas cada (o cache do Docker
+# pula as camadas que ja deram certo)
+for svc in relay-broker connect mcp hosted-provider; do
+  for tentativa in 1 2 3; do
+    if MDBASE_CONNECT_VERSION=$NOVA docker compose --project-name mdbase-connect-build \
+         --env-file "$OPT/.env" -f compose.yml --profile hosted --profile mcp \
+         build --build-arg CARGO_BUILD_JOBS=2 "$svc"; then
+      break
+    fi
+    [ "$tentativa" -lt 3 ] || { echo "build de $svc falhou 3 vezes" >&2; exit 1; }
+    echo "build de $svc falhou (tentativa $tentativa), de novo em 60 s" >&2
+    sleep 60
+  done
+done
 for img in server nats mcp hosted-provider; do
   docker image inspect "mdbase-connect-$img:$NOVA" >/dev/null
 done
