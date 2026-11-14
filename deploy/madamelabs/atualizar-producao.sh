@@ -7,6 +7,7 @@
 # de controle ganha as migracoes 0099 a 0103, que a beta.156 nao entende:
 # voltar atras e restaurar o backup do passo 1, nao trocar a versao de volta.
 set -euo pipefail
+trap 'echo "falhou na linha $LINENO: $BASH_COMMAND" >&2' ERR
 
 NOVA=0.1.0-beta.210
 VELHA=0.1.0-beta.156
@@ -32,10 +33,13 @@ BASE=748bf3e16dc464c09fba4d5e07e78f56184d20c3
 # a producao esta na beta.156 e o compose dela e o do upstream daquela tag
 grep -qx "MDBASE_CONNECT_VERSION=$VELHA" "$OPT/.env"
 cmp -s "$OPT/compose.yml" <("${G[@]}" show "v$VELHA:deploy/self-host/compose.yml")
-# o override prende o MCP com o registro de escritas, numa linha so
+# o override prende o MCP com o registro de escritas (mcp e mcp-migrate)
 MCP_VELHA="mdbase-connect-mcp:$VELHA-registro"
 MCP_NOVA="mdbase-connect-mcp:$NOVA-registro"
-[ "$(grep -c "image: $MCP_VELHA\$" "$OPT/override.yml")" -eq 1 ]
+LINHA_MCP="image: *[\"']?$MCP_VELHA[\"']? *\$"
+n_mcp=$(grep -Ec "$LINHA_MCP" "$OPT/override.yml" || true)
+echo "linhas do override com $MCP_VELHA: $n_mcp"
+[ "$n_mcp" -ge 1 ]
 # espaco para as imagens novas
 [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20 ]
 curl -fsS -o /dev/null https://connect.madamelabs.com.br/ready
@@ -74,7 +78,8 @@ cp -a "$OPT/.env" "$OPT/.env.antes-$NOVA"
 cp -a "$OPT/override.yml" "$OPT/override.yml.antes-$NOVA"
 install -m 0644 "$SRC/deploy/self-host/compose.yml" "$OPT/compose.yml"
 sed -i "s/^MDBASE_CONNECT_VERSION=.*/MDBASE_CONNECT_VERSION=$NOVA/" "$OPT/.env"
-sed -i "s|image: $MCP_VELHA\$|image: $MCP_NOVA|" "$OPT/override.yml"
+sed -Ei "s|$LINHA_MCP|image: $MCP_NOVA|" "$OPT/override.yml"
+[ "$(grep -c "image: $MCP_NOVA\$" "$OPT/override.yml")" -eq "$n_mcp" ]
 cd "$OPT"
 imagens=$("${DC[@]}" config --images | sort -u)
 echo "$imagens"
