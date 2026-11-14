@@ -19,6 +19,9 @@ COPY deploy/docker/Cargo.lock.hosted-provider ./Cargo.lock
 COPY crates crates
 COPY config config
 COPY templates templates
+# MadameLabs: o Labs tem 7,5 GiB e roda a producao ao lado; o build passa
+# --build-arg CARGO_BUILD_JOBS=2 (vazio, o cargo usa todos os nucleos).
+ARG CARGO_BUILD_JOBS
 RUN --mount=type=cache,id=hosted-provider-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=hosted-provider-cargo-git,target=/usr/local/cargo/git/db,sharing=locked \
     --mount=type=cache,id=hosted-provider-target,target=/build/mdbase-connect/target,sharing=locked \
