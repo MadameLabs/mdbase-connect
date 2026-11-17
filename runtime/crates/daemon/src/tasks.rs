@@ -18,8 +18,8 @@ use clap::{Args, Subcommand};
 use mdbn_tasks::{
     Binding, NewTask, OpenEntry, ProjectItem, ProjectsSummary, ReviewItem, TaskError, TaskView,
     TasksConfig, filter_queue_by_owner, is_project_path, list_projects, parse_instant,
-    project_assign, project_milestone, project_name, project_rename_status, project_review,
-    project_status, projects_summary, resolve_person,
+    person_matches, project_assign, project_milestone, project_name, project_rename_status,
+    project_review, project_status, projects_summary, resolve_person,
 };
 use mdbn_wire::Wire;
 use mdbn_wire::cbor::Cbor;
@@ -485,7 +485,7 @@ impl From<ClientError> for Failure {
             ClientError::Remote(err) => err.into(),
             ClientError::NotRunning => Failure::new(
                 "daemon_not_running",
-                "the mdbase daemon is not running; start it with `mdbase daemon start`",
+                "the mdbase daemon is not running; on machines with the legacy Connect service run: systemctl --user start mdbase-connect.service",
             ),
             other => Failure::new("daemon_unreachable", other.to_string()),
         }
@@ -565,6 +565,12 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             let op = mdbn_tasks::create(&s.binding, &s.config(), &new)?;
             s.check_op_people(&op).await?;
             let path = op_path(&op);
+            if s.record_exists(&path).await? {
+                return Err(Failure::new(
+                    "task_exists",
+                    format!("a note already exists at {path}; pick another title"),
+                ));
+            }
             s.write(&path, vec![op], None).await
         }
         TasksCmd::Promote {
@@ -698,8 +704,17 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             let mut s = Session::open(&target, profile, true).await?;
             let person = s.timer_person(&responsavel).await?;
             let view = s.view(&path).await?;
-            let ops = mdbn_tasks::stop(&s.binding, &view, &person, &status, s.now()?, s.today()?)?;
-            s.write(&path, ops, write.if_revision.as_deref()).await
+            let plan =
+                mdbn_tasks::stop_plan(&s.binding, &view, &person, &status, s.now()?, s.today()?)?;
+            let no_open = plan.closed.is_empty();
+            let mut result = s
+                .write(&path, plan.ops, write.if_revision.as_deref())
+                .await?;
+            result["closed"] = json!(plan.closed);
+            if no_open && result.get("warning").is_none() {
+                result["warning"] = json!("no_open_entry");
+            }
+            Ok(result)
         }
         TasksCmd::Timer(TimerCmd::Fix {
             target,
@@ -741,14 +756,20 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             for record in all_records(&mut s.t, &[TASK_TYPE]).await? {
                 let view = view_of(&record);
                 for OpenEntry { person, start } in mdbn_tasks::open_entries(&s.binding, &view) {
+                    // An ownerless entry belongs to no person: it is listed only unfiltered.
                     let mine = match &people {
-                        Some(links) => links
-                            .iter()
-                            .any(|link| strip_link(link) == strip_link(&person)),
+                        Some(links) => {
+                            !person.is_empty() && links.iter().any(|l| person_matches(&person, l))
+                        }
                         None => true,
                     };
                     if mine {
-                        out.push(json!({"path": view.path, "person": person, "start": start}));
+                        let who = if person.is_empty() {
+                            Value::Null
+                        } else {
+                            json!(person)
+                        };
+                        out.push(json!({"path": view.path, "person": who, "start": start}));
                     }
                 }
             }
@@ -1085,6 +1106,16 @@ impl Session {
         Ok(out)
     }
 
+    /// Whether a record exists at `path`: the store answers `not_found` when it does
+    /// not.
+    async fn record_exists(&mut self, path: &str) -> Result<bool, Failure> {
+        match self.view(path).await {
+            Ok(_) => Ok(true),
+            Err(f) if f.code == "not_found" => Ok(false),
+            Err(f) => Err(f),
+        }
+    }
+
     /// The task at `path`, with the revision it is read at.
     async fn view(&mut self, path: &str) -> Result<TaskView, Failure> {
         let record: RecordView = data::decode(
@@ -1397,31 +1428,40 @@ fn gate_person(
     }
 }
 
-/// The open timers of the people `links` stand for, and the clock they were read at.
+/// The open timers the gate lists, and the clock they were read at.
 struct GateTimers {
-    /// Task path and stored start of each open entry.
+    /// Task path and stored start of each open entry of the person, if any.
     open: Vec<(String, String)>,
+    /// Task path and stored start of each open entry with no owner.
+    ownerless: Vec<(String, String)>,
     now: String,
     /// The local clock could not be read: the times are UTC.
     utc: bool,
 }
 
-async fn gate_timers(s: &mut Session, links: &[String]) -> Result<GateTimers, Failure> {
+/// Reads the open entries of every task: those of the people `links` stand for, and
+/// the ownerless ones. `links` is `None` when there is no person to list.
+async fn gate_timers(s: &mut Session, links: Option<&[String]>) -> Result<GateTimers, Failure> {
     let now = s.now()?.to_string();
     let utc = s.clock_ref()?.utc;
     let mut open = Vec::new();
+    let mut ownerless = Vec::new();
     for record in all_records(&mut s.t, &[TASK_TYPE]).await? {
         let view = view_of(&record);
         for OpenEntry { person, start } in mdbn_tasks::open_entries(&s.binding, &view) {
-            if links
-                .iter()
-                .any(|link| strip_link(link) == strip_link(&person))
-            {
+            if person.is_empty() {
+                ownerless.push((view.path.clone(), start));
+            } else if links.is_some_and(|links| links.iter().any(|l| person_matches(&person, l))) {
                 open.push((view.path.clone(), start));
             }
         }
     }
-    Ok(GateTimers { open, now, utc })
+    Ok(GateTimers {
+        open,
+        ownerless,
+        now,
+        utc,
+    })
 }
 
 /// How long a timer has been open, as `N min` or `H h MM min`.
@@ -1437,38 +1477,56 @@ fn elapsed_text(start: &str, now: &str) -> String {
     }
 }
 
-/// The timers section: the person's open timers, last in the context.
-fn render_timers(name: &str, timers: &GateTimers) -> String {
+/// The timers part of the context: the person's open timers (when there is a
+/// person), then the ownerless ones, then the UTC notice. Empty when there is
+/// nothing to say.
+fn render_timers(name: Option<&str>, timers: &GateTimers) -> String {
     let mut lines = Vec::new();
-    if timers.open.is_empty() {
-        lines.push(format!("Cronômetros abertos de {name}: nenhum."));
-    } else {
-        lines.push(format!("Cronômetros abertos de {name}:"));
-        for (path, start) in &timers.open {
-            lines.push(format!(
-                "- {path} (aberto desde {start}, há {})",
-                elapsed_text(start, &timers.now)
-            ));
+    if let Some(name) = name {
+        if timers.open.is_empty() {
+            lines.push(format!("Cronômetros abertos de {name}: nenhum."));
+        } else {
+            lines.push(format!("Cronômetros abertos de {name}:"));
+            push_timer_lines(&mut lines, &timers.open, &timers.now);
         }
     }
-    if timers.utc {
+    if !timers.ownerless.is_empty() {
+        lines.push("Cronômetros abertos sem dono:".to_string());
+        push_timer_lines(&mut lines, &timers.ownerless, &timers.now);
+    }
+    if !lines.is_empty() && timers.utc {
         lines.push("Horários em UTC: o relógio local não pôde ser lido.".to_string());
     }
     lines.join("\n")
 }
 
-/// The timers section, or the reason it could not be read. Never fails.
-async fn timers_section(s: &mut Session, name: &str, links: &[String]) -> String {
-    match gate_timers(s, links).await {
-        Ok(timers) => render_timers(name, &timers),
-        Err(f) => format!(
-            "Cronômetros abertos de {name}: não consultados ({}).",
-            f.code
-        ),
+fn push_timer_lines(lines: &mut Vec<String>, entries: &[(String, String)], now: &str) {
+    for (path, start) in entries {
+        lines.push(format!(
+            "- {path} (aberto desde {start}, há {})",
+            elapsed_text(start, now)
+        ));
     }
 }
 
-/// The meaning the rules give the four status names they know. Other names of the
+/// The timers part of the context, or the reason it could not be read (only when a
+/// person is named, so the failure has a line to sit on). Never fails.
+async fn timers_section(s: &mut Session, person: Option<(&str, &[String])>) -> String {
+    let links = person.map(|(_, links)| links);
+    let name = person.map(|(name, _)| name);
+    match gate_timers(s, links).await {
+        Ok(timers) => render_timers(name, &timers),
+        Err(f) => match name {
+            Some(name) => format!(
+                "Cronômetros abertos de {name}: não consultados ({}).",
+                f.code
+            ),
+            None => String::new(),
+        },
+    }
+}
+
+/// The meaning the rules give the status names they know. Other names of the
 /// collection's type have none: they are listed without one.
 fn status_meaning(name: &str) -> Option<&'static str> {
     match name {
@@ -1480,7 +1538,17 @@ fn status_meaning(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Every status of the type, each with its meaning when the rules know it.
+/// The statuses `stop` is offered: the type's closed statuses, and `aprovacao` and
+/// `pausa` when the type has them, in the type's order.
+fn stop_statuses(b: &Binding) -> Vec<String> {
+    b.statuses
+        .iter()
+        .filter(|s| b.is_closed(s) || matches!(s.as_str(), "aprovacao" | "pausa"))
+        .cloned()
+        .collect()
+}
+
+/// Each status, with its meaning when the rules know it.
 fn status_list(statuses: &[String]) -> String {
     statuses
         .iter()
@@ -1524,7 +1592,7 @@ async fn gate_context(
         .first()
         .map_or("<status de conclusão>", String::as_str)
         .to_string();
-    let statuses = status_list(&s.binding.statuses);
+    let statuses = status_list(&stop_statuses(&s.binding));
     let mut parts = vec![
         format!("Gate TaskNotes obrigatório na coleção {raw}. Esta sessão não tem tarefa vinculada."),
         "Reclassifique a intenção a cada mensagem: o pedido em curso tem execução? Se tem, existe um artefato durável — briefing, design, especificação, plano ou tarefa direta — que a represente? O ciclo é detectar a intenção de execução, materializar o artefato durável, promover a nota a tarefa, iniciar o cronômetro, concluir a fase e avançar para o artefato seguinte.".to_string(),
@@ -1536,8 +1604,13 @@ async fn gate_context(
         format!("Iniciar: mdbase tasks start \"CAMINHO_EXATO\" --responsavel {p} -C {c}"),
         format!("A pessoa usuária pode dispensar tarefa e cronômetro explicitamente; nunca escolher ou criar silenciosamente. Use somente o mdbase tasks. O cronômetro acompanha a tarefa, não a resposta: não pare ao fim de cada resposta, só no desfecho da tarefa (confirmação, troca de assunto ou encerramento). No desfecho, o agente decide o status a partir do contexto; só pergunte diante de ambiguidade material. mdbase tasks stop exige --status: {statuses}. Encerrar: mdbase tasks stop \"CAMINHO_EXATO\" --responsavel {p} --status <status> -C {c}"),
     ];
-    if let Some((name, Some(links))) = &person {
-        parts.push(timers_section(&mut s, name, links).await);
+    let timed = match &person {
+        Some((name, Some(links))) => Some((name.as_str(), links.as_slice())),
+        _ => None,
+    };
+    let timers = timers_section(&mut s, timed).await;
+    if !timers.is_empty() {
+        parts.push(timers);
     }
     Ok(parts.join("\n\n"))
 }

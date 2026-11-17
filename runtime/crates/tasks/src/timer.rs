@@ -30,6 +30,30 @@ pub struct OpenEntry {
     pub start: String,
 }
 
+/// A planned stop: the write, and the stored start of each entry it closed (empty
+/// when none was open, in which case only the status is written).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StopPlan {
+    /// The planned write: one update that sets the status and, when an entry closed,
+    /// the entries.
+    pub ops: Vec<Value>,
+    /// The stored start of each entry closed.
+    pub closed: Vec<String>,
+}
+
+/// Whether a stored owner (`pessoa:` text, with or without `[[ ]]`) is the person
+/// named. Both sides are compared without brackets and surrounding spaces.
+pub fn person_matches(stored: &str, wanted: &str) -> bool {
+    person_key(stored) == person_key(wanted)
+}
+
+fn person_key(value: &str) -> &str {
+    let inner = value.trim();
+    let inner = inner.strip_prefix("[[").unwrap_or(inner);
+    let inner = inner.strip_suffix("]]").unwrap_or(inner);
+    inner.trim()
+}
+
 /// The entries of the task that have no end yet.
 pub fn open_entries(b: &Binding, t: &TaskView) -> Vec<OpenEntry> {
     entries_of(b, t)
@@ -53,7 +77,7 @@ pub fn start(b: &Binding, t: &TaskView, person: &str, now: &str) -> Result<Vec<V
     let mut entries = entries_of(b, t);
     if entries
         .iter()
-        .any(|e| is_open(e) && owner(e) == Some(person))
+        .any(|e| is_open(e) && owner(e).is_some_and(|o| person_matches(o, person)))
     {
         return Ok(Vec::new());
     }
@@ -70,7 +94,8 @@ pub fn start(b: &Binding, t: &TaskView, person: &str, now: &str) -> Result<Vec<V
 /// The person's own open entries are closed at `now`. When the person has none, the
 /// open ownerless entries are closed instead. The status goes through the same
 /// closing rules as `set_status`, so a closed status records `completedDate`. The
-/// entries are written only when one was closed.
+/// entries are written only when one was closed. See [`stop_plan`] for the entries
+/// closed.
 pub fn stop(
     b: &Binding,
     t: &TaskView,
@@ -79,6 +104,18 @@ pub fn stop(
     now: &str,
     today: &str,
 ) -> Result<Vec<Value>, TaskError> {
+    stop_plan(b, t, person, status, now, today).map(|plan| plan.ops)
+}
+
+/// [`stop`], also reporting the stored start of each entry it closed.
+pub fn stop_plan(
+    b: &Binding,
+    t: &TaskView,
+    person: &str,
+    status: &str,
+    now: &str,
+    today: &str,
+) -> Result<StopPlan, TaskError> {
     check_person(person)?;
     check_instant(now, "invalid_now")?;
     if status.is_empty() || !b.statuses.iter().any(|s| s == status) {
@@ -91,7 +128,9 @@ pub fn stop(
 
     let mut entries = entries_of(b, t);
     let own: Vec<usize> = (0..entries.len())
-        .filter(|&i| is_open(&entries[i]) && owner(&entries[i]) == Some(person))
+        .filter(|&i| {
+            is_open(&entries[i]) && owner(&entries[i]).is_some_and(|o| person_matches(o, person))
+        })
         .collect();
     let closing: Vec<usize> = if own.is_empty() {
         (0..entries.len())
@@ -101,17 +140,29 @@ pub fn stop(
         own
     };
     if closing.is_empty() {
-        return Ok(vec![update(t, fields)]);
+        return Ok(StopPlan {
+            ops: vec![update(t, fields)],
+            closed: Vec::new(),
+        });
     }
 
+    let mut closed = Vec::with_capacity(closing.len());
     for &i in &closing {
         check_after_start(&entries[i], now)?;
+        closed.push(
+            text(&entries[i], "startTime")
+                .unwrap_or_default()
+                .to_string(),
+        );
         if let Some(entry) = entries[i].as_object_mut() {
             entry.insert("endTime".to_string(), json!(now));
         }
     }
     fields.insert(b.field("timeEntries").to_string(), Value::Array(entries));
-    Ok(vec![update(t, fields)])
+    Ok(StopPlan {
+        ops: vec![update(t, fields)],
+        closed,
+    })
 }
 
 /// Plans the correction of a closed entry, found by its stored start. A new start

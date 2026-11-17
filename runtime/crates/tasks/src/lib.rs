@@ -29,7 +29,10 @@ pub use projects::{
     is_valid_date, list_projects, path_matches, project_assign, project_milestone, project_name,
     project_rename_status, project_review, project_status, projects_summary,
 };
-pub use timer::{OpenEntry, PERSON_PREFIX, open_entries, parse_instant, retime, start, stop};
+pub use timer::{
+    OpenEntry, PERSON_PREFIX, StopPlan, open_entries, parse_instant, person_matches, retime, start,
+    stop, stop_plan,
+};
 
 /// An error with a stable machine code and a human message.
 #[derive(Debug, Clone, PartialEq, Eq)]

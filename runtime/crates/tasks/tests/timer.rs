@@ -1,6 +1,6 @@
 //! Tests for the person's timer on a task: start, stop and retime of time entries.
 
-use mdbn_tasks::{Binding, TaskView, open_entries, retime, start, stop};
+use mdbn_tasks::{Binding, TaskView, open_entries, retime, start, stop, stop_plan};
 use serde_json::{Map, Value, json};
 
 const TASK_TYPE: &str = include_str!("fixtures/task-type.json");
@@ -337,4 +337,56 @@ fn retime_recusa_horario_que_nao_e_iso() {
     )
     .expect_err("offset out of range");
     assert_eq!(err.code, "invalid_new_end");
+}
+
+#[test]
+fn stop_reconhece_dono_com_colchetes() {
+    let b = binding();
+    // The entry was written without brackets; the caller names the person with them.
+    let t = tarefa(json!({
+        "status": "em-andamento",
+        "timeEntries": [{"startTime": "2026-11-16T09:00:00.000Z", "description": "pessoa: Arthur Cardoso"}]
+    }));
+    let ops = stop(&b, &t, ARTHUR, "pausa", AGORA, HOJE).expect("stops");
+    let fechada = campos(unica_operacao(&ops))
+        .get("timeEntries")
+        .cloned()
+        .expect("entries");
+    assert_eq!(fechada[0]["endTime"], json!(AGORA), "the entry is Arthur's");
+
+    // And the other way round: the entry has brackets, the caller names the bare name.
+    let t = tarefa(json!({
+        "status": "em-andamento",
+        "timeEntries": [{"startTime": "2026-11-16T09:00:00.000Z", "description": "pessoa: [[Arthur Cardoso]]"}]
+    }));
+    let ops = stop(&b, &t, "Arthur Cardoso", "pausa", AGORA, HOJE).expect("stops");
+    let fechada = campos(unica_operacao(&ops))
+        .get("timeEntries")
+        .cloned()
+        .expect("entries");
+    assert_eq!(fechada[0]["endTime"], json!(AGORA));
+}
+
+#[test]
+fn stop_relata_as_entradas_fechadas() {
+    let b = binding();
+    let t = tarefa(json!({
+        "status": "em-andamento",
+        "timeEntries": [
+            {"startTime": "2026-11-16T09:00:00.000Z", "description": "pessoa: [[Arthur Cardoso]]"},
+            {"startTime": "2026-11-16T09:30:00.000Z", "description": "pessoa: [[Mayara Almeida]]"}
+        ]
+    }));
+    let plano = stop_plan(&b, &t, ARTHUR, "pausa", AGORA, HOJE).expect("stops");
+    assert_eq!(plano.closed, vec!["2026-11-16T09:00:00.000Z".to_string()]);
+    assert_eq!(plano.ops.len(), 1);
+
+    let sem = tarefa(json!({"status": "em-andamento"}));
+    let plano = stop_plan(&b, &sem, ARTHUR, "pausa", AGORA, HOJE).expect("stops");
+    assert!(
+        plano.closed.is_empty(),
+        "no entry closed: {:?}",
+        plano.closed
+    );
+    assert_eq!(plano.ops.len(), 1, "the status is still written");
 }

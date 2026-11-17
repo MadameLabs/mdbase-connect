@@ -205,6 +205,101 @@ fn start_e_stop_numa_gravacao_cada() {
 }
 
 #[test]
+fn stop_sem_cronometro_avisa() {
+    let f = fixture("tsc", Some("{}"));
+    let (code, v) = f.json(&[
+        "tasks",
+        "create",
+        "Sem cronômetro",
+        "--responsavel",
+        "Arthur",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let path = v["result"]["path"].as_str().unwrap().to_string();
+
+    // Nothing was started: the status is still written, and the result says so.
+    let (code, v) = f.json(&[
+        "tasks",
+        "stop",
+        &path,
+        "--responsavel",
+        "Arthur",
+        "--status",
+        "pausa",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["closed"], serde_json::json!([]), "{v}");
+    assert_eq!(v["result"]["warning"], "no_open_entry", "{v}");
+    let (_, v) = f.json(&["tasks", "show", &path]);
+    assert_eq!(v["result"]["frontmatter"]["status"], "pausa", "{v}");
+
+    // With a timer open, the result lists the start of the entry it closed.
+    let (code, v) = f.json(&["tasks", "start", &path, "--responsavel", "Arthur"]);
+    assert_eq!(code, 0, "{v}");
+    let (_, v) = f.json(&["tasks", "show", &path]);
+    let start = v["result"]["frontmatter"]["timeEntries"][0]["startTime"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (code, v) = f.json(&[
+        "tasks",
+        "stop",
+        &path,
+        "--responsavel",
+        "Arthur",
+        "--status",
+        "pausa",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["closed"], serde_json::json!([start]), "{v}");
+    assert!(v["result"].get("warning").is_none(), "{v}");
+}
+
+#[test]
+fn create_titulo_repetido_da_task_exists() {
+    let f = fixture("tcr", Some("{}"));
+    let (code, v) = f.json(&["tasks", "create", "Repetida"]);
+    assert_eq!(code, 0, "{v}");
+    let path = v["result"]["path"].as_str().unwrap().to_string();
+    let before = f.read(&path);
+
+    let (code, v) = f.json(&["tasks", "create", "Repetida"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "task_exists", "{v}");
+    assert!(v["message"].as_str().unwrap().contains(&path), "{v}");
+    assert_eq!(
+        f.read(&path),
+        before,
+        "the existing note must stay as it was"
+    );
+}
+
+#[test]
+fn daemon_parado_diz_o_servico_legado() {
+    // No daemon listens on this state directory.
+    let state =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("dpar{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    std::fs::create_dir_all(&state).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mdbase"))
+        .args(["--json", "--state-dir"])
+        .arg(&state)
+        .args(["tasks", "list", "-c", "qualquer"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    assert_eq!(v["error"], "daemon_not_running", "{v}");
+    let message = v["message"].as_str().unwrap();
+    assert!(
+        message.contains(
+            "the mdbase daemon is not running; on machines with the legacy Connect service run: systemctl --user start mdbase-connect.service"
+        ),
+        "{message}"
+    );
+}
+
+#[test]
 fn revisao_mudou_no_meio_da_erro() {
     let f = fixture("trv", Some("{}"));
     task_file(&f.root, "06-tarefas/Tasks/rev.md", "Revisar", "backlog");
@@ -798,6 +893,12 @@ fn gate_claude_tem_envelope() {
     );
     assert!(ctx.contains("--status <status>"), "{ctx}");
     assert!(ctx.contains("aprovacao") && ctx.contains("pausa"), "{ctx}");
+    assert_eq!(
+        stop_list(&ctx),
+        "aprovacao (terminou e precisa de conferência), pausa (só stand-by real), \
+         concluido (verificável sozinho, ou já confirmado), cancelado (abandonado)",
+        "{ctx}"
+    );
     for old in [
         "--session",
         "--agent",
@@ -810,6 +911,16 @@ fn gate_claude_tem_envelope() {
             "{old} must not survive in the context: {ctx}"
         );
     }
+}
+
+/// The statuses the gate offers to `stop`: the text between its `--status:` and `Encerrar:`.
+fn stop_list(ctx: &str) -> &str {
+    let from = ctx
+        .find("mdbase tasks stop exige --status: ")
+        .expect("the stop rule")
+        + "mdbase tasks stop exige --status: ".len();
+    let to = from + ctx[from..].find(". Encerrar:").expect("the stop command");
+    &ctx[from..to]
 }
 
 #[test]
@@ -873,6 +984,54 @@ fn gate_lista_cronometros_abertos_da_pessoa() {
     // The timers come last, as the adapter's context ends with them.
     let last = ctx.trim_end().lines().last().unwrap();
     assert!(last.starts_with("- ") && last.contains(&paths[0]), "{ctx}");
+}
+
+#[test]
+fn gate_lista_cronometros_sem_dono() {
+    let f = fixture("tgo", Some("{\"people\":{\"arthur\":[\"[[Arthur]]\"]}}"));
+    // An entry the Obsidian plugin opened: no `pessoa:` description, so no owner.
+    let rel = "06-tarefas/Tasks/sem-dono.md";
+    std::fs::write(
+        f.root.join(rel),
+        "---\ntags: [task]\ntitle: \"Sem dono\"\nstatus: em-andamento\ntimeEntries:\n  - startTime: \"2026-11-17T08:00:00.000-03:00\"\ndateCreated: \"2026-11-01T09:00:00.000-03:00\"\n---\nCorpo.\n",
+    )
+    .unwrap();
+
+    let out = f.run_stdin(
+        &[
+            "tasks",
+            "gate",
+            "--agent",
+            "claude",
+            "--responsavel",
+            "arthur",
+        ],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(ctx.contains("Cronômetros abertos sem dono:"), "{ctx}");
+    assert!(ctx.contains(&format!("- {rel} (aberto desde")), "{ctx}");
+    assert!(
+        ctx.contains("Cronômetros abertos de arthur: nenhum."),
+        "{ctx}"
+    );
+
+    // The same entry, as `timer status` reports it: no person.
+    let (code, v) = f.json(&["tasks", "timer", "status"]);
+    assert_eq!(code, 0, "{v}");
+    let entries = v["result"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{v}");
+    assert_eq!(entries[0]["path"], rel, "{v}");
+    assert!(entries[0]["person"].is_null(), "{v}");
+
+    // A person's own filter leaves it out.
+    let (code, v) = f.json(&["tasks", "timer", "status", "--responsavel", "arthur"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(v["result"].as_array().unwrap().is_empty(), "{v}");
 }
 
 #[test]
@@ -1048,9 +1207,10 @@ fn gate_usa_status_do_tipo() {
         .as_str()
         .unwrap();
     assert!(ctx.contains("--status feito antes de a seguinte"), "{ctx}");
-    assert!(ctx.contains("rascunho (status do tipo task)"), "{ctx}");
-    assert!(ctx.contains("feito (status do tipo task)"), "{ctx}");
-    assert!(ctx.contains("descartado (status do tipo task)"), "{ctx}");
+    // Only the closing statuses are offered to `stop`: `feito` is the type's only
+    // completed value, and the type has neither `aprovacao` nor `pausa`.
+    let stop = stop_list(&ctx);
+    assert_eq!(stop, "feito (status do tipo task)", "{ctx}");
     for fixed in ["concluido", "aprovacao", "cancelado", "--status concluido"] {
         assert!(
             !ctx.contains(fixed),
