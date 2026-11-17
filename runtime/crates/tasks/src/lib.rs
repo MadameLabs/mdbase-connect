@@ -10,9 +10,13 @@
 
 mod binding;
 mod config;
+mod plan;
 
 pub use binding::Binding;
 pub use config::TasksConfig;
+pub use plan::{
+    TaskView, archive, block, is_open, link_projects, set_status, skip, unblock, unskip, wikilink,
+};
 
 /// An error with a stable machine code and a human message.
 #[derive(Debug, Clone, PartialEq, Eq)]
