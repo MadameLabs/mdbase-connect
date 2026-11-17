@@ -5,7 +5,7 @@ import { normalizeCollectionChange } from "@mdbase-dev/connect";
 import { z } from "zod";
 import { ConnectGateway, GatewayOperationError } from "./connect.js";
 import { OAuthService, type McpAuthContext } from "./oauth.js";
-import type { WriteAudit, WriteOutcome, WriteTool } from "./write-audit.js";
+import { refuseUnrecordedWrites, type WriteAudit, type WriteOutcome, type WriteTool } from "./write-audit.js";
 
 const connectionId = z.uuid().describe("Opaque connection ID returned by list_connections");
 const path = z.string().min(1).max(1_024).describe("Collection-relative record path");
@@ -26,7 +26,7 @@ export function createMcpServer(
   context: McpAuthContext,
   gateway: ConnectGateway,
   oauth: OAuthService,
-  audit: WriteAudit
+  audit: WriteAudit = refuseUnrecordedWrites
 ): McpServer {
   const server = new McpServer(
     { name: "mdbase", version: "0.1.0-beta.152" },

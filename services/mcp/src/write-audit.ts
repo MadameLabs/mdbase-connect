@@ -19,6 +19,16 @@ export interface WriteAudit {
   finish(id: string, result: WriteOutcome): Promise<void>;
 }
 
+// Padrão quando ninguém passa um registro: toda escrita é recusada com
+// `audit_unavailable`, como quando o banco do registro está fora. Esquecer de
+// ligar o registro nunca deixa uma escrita passar sem rastro.
+export const refuseUnrecordedWrites: WriteAudit = {
+  async begin() {
+    throw new Error("write_audit_not_configured");
+  },
+  async finish() {}
+};
+
 export function createPgWriteAudit(db: DatabaseQueryable): WriteAudit {
   return {
     async begin(entry) {

@@ -11,7 +11,8 @@ import { createPgWriteAudit, type WriteAudit, type WriteAuditEntry } from "./wri
 const CONN = "01911111-1111-7111-8111-111111111111";
 const context = { clientId: "client-enola", connectionSetId: "set-1", scopes: ["mdbase:read", "mdbase:write"] as const };
 
-async function connect(gateway: Partial<ConnectGateway>, audit: WriteAudit) {
+// Os dublês só implementam o que cada teste usa; `operation` é genérico no gateway.
+async function connect(gateway: unknown, audit?: WriteAudit) {
   const server = createMcpServer(
     { ...context, scopes: [...context.scopes] },
     gateway as ConnectGateway,
@@ -33,6 +34,20 @@ function fakeAudit(overrides: Partial<WriteAudit> = {}) {
 }
 
 describe("write audit", () => {
+  it("sem registro configurado, a escrita falha com audit_unavailable e não chega ao gateway", async () => {
+    const gateway = { operation: vi.fn(async () => ({ revision: "r2" })) };
+    const client = await connect(gateway);
+
+    const result = await client.callTool({
+      name: "update_record",
+      arguments: { connection_id: CONN, path: "00-conhecimento/backlog-conteudo.md", body: "novo" }
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("audit_unavailable");
+    expect(gateway.operation).not.toHaveBeenCalled();
+  });
+
   it("update_record bem-sucedido registra begin e finish ok", async () => {
     const gateway = { operation: vi.fn(async () => ({ revision: "r2" })) };
     const audit = fakeAudit();
