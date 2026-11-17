@@ -12,6 +12,8 @@ const TASK_TYPE: &str = include_str!("../../tasks/tests/fixtures/task-type.json"
 /// The `tasknotes.task` contract the type implements; a type whose contract is
 /// missing does not load.
 const TASK_CONTRACT: &str = include_str!("../../tasks/tests/fixtures/tasknotes-task-contract.md");
+/// The `projeto` type of the project notes, as the BIBLIOTECA declares it.
+const PROJECT_TYPE: &str = include_str!("../../tasks/tests/fixtures/projeto-type.md");
 
 struct Fixture {
     root: PathBuf,
@@ -47,6 +49,7 @@ fn fixture(tag: &str, config: Option<&str>) -> Fixture {
         "---\nkind: mdbase.type\nname: pessoa\nmatch:\n  path_glob: \"pessoas/**/*.md\"\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
     )
     .unwrap();
+    std::fs::write(root.join("_types/projeto.md"), PROJECT_TYPE).unwrap();
     std::fs::write(
         root.join("_types/marca.md"),
         "---\nkind: mdbase.type\nname: marca\nmatch:\n  path_glob: \"02-marcas/**/*.md\"\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
@@ -82,6 +85,37 @@ fn task_file(root: &Path, rel: &str, title: &str, status: &str) {
         "---\ntags: [task]\ntitle: \"{title}\"\nstatus: {status}\ndateCreated: \"2026-11-01T09:00:00.000-03:00\"\n---\nCorpo.\n"
     );
     std::fs::write(root.join(rel), text).unwrap();
+}
+
+/// Writes a project note with the given frontmatter lines (YAML, without the fences).
+fn project_file(root: &Path, rel: &str, frontmatter: &str) {
+    std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+    std::fs::write(root.join(rel), format!("---\n{frontmatter}\n---\nCorpo.\n")).unwrap();
+}
+
+/// Writes a task note that links to projects and carries extra frontmatter lines.
+fn task_linked(root: &Path, rel: &str, projects: &str, extra: &str) {
+    let text = format!(
+        "---\ntags: [task]\ntitle: \"Tarefa\"\nstatus: to-do\nprojects: [\"{projects}\"]\n{extra}dateCreated: \"2026-11-01T09:00:00.000-03:00\"\n---\nCorpo.\n"
+    );
+    std::fs::write(root.join(rel), text).unwrap();
+}
+
+const Q: &str = "02-marcas/Madame_Labs/Projetos/q.md";
+const R: &str = "02-marcas/Madame_Labs/Projetos/r.md";
+
+/// The project `q`, active and owned by Arthur, and `r`, active and without an owner.
+fn two_projects(f: &Fixture) {
+    project_file(
+        &f.root,
+        Q,
+        "type: projeto\nbrand: \"[[Madame_Labs]]\"\nstatus: em-andamento\nowner: \"[[Arthur]]\"",
+    );
+    project_file(
+        &f.root,
+        R,
+        "type: projeto\nbrand: \"[[Madame_Labs]]\"\nstatus: em-andamento",
+    );
 }
 
 impl Fixture {
@@ -303,4 +337,347 @@ fn saida_json_estavel() {
     assert!(v["error"].is_string(), "{v}");
     assert!(v["message"].is_string(), "{v}");
     assert_eq!(v.as_object().unwrap().len(), 3, "{v}");
+}
+
+// --- projects (cli.test.mjs, projectCli) ---
+
+#[test]
+fn projeto_status_grava_desfecho_e_recusa_fechar_sem_ele() {
+    let f = fixture("pst", Some("{}"));
+    two_projects(&f);
+    let before = f.read(Q);
+
+    let (code, v) = f.json(&["tasks", "projects", "status", "q", "--status", "concluido"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "desfecho_obrigatorio", "{v}");
+    assert_eq!(
+        f.read(Q),
+        before,
+        "a refused status must not touch the note"
+    );
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "status",
+        "q",
+        "--status",
+        "concluido",
+        "--desfecho",
+        "entregue",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["path"], Q, "{v}");
+    assert_eq!(v["result"]["changed"], true, "{v}");
+    let (_, shown) = f.json(&["tasks", "show", Q]);
+    let fm = &shown["result"]["frontmatter"];
+    assert_eq!(fm["status"], "concluido", "{shown}");
+    assert_eq!(fm["outcome"], "entregue", "{shown}");
+    assert!(fm["outcomeDate"].is_string(), "{shown}");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "status",
+        "q",
+        "--status",
+        "em-andamento",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let (_, shown) = f.json(&["tasks", "show", Q]);
+    let fm = &shown["result"]["frontmatter"];
+    assert!(
+        fm.get("outcome").is_none() || fm["outcome"].is_null(),
+        "{shown}"
+    );
+}
+
+#[test]
+fn projeto_pausa_checa_a_retomada_contra_o_relogio() {
+    let f = fixture("tpr", Some("{}"));
+    two_projects(&f);
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "status",
+        "q",
+        "--status",
+        "pausa",
+        "--desfecho",
+        "cliente sumiu",
+        "--retomar-em",
+        "2000-01-01",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "retomada_no_passado", "{v}");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "status",
+        "q",
+        "--status",
+        "pausa",
+        "--desfecho",
+        "cliente sumiu",
+        "--retomar-em",
+        "2999-01-01",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let (_, shown) = f.json(&["tasks", "show", Q]);
+    assert_eq!(
+        shown["result"]["frontmatter"]["resumeOn"], "2999-01-01",
+        "{shown}"
+    );
+}
+
+#[test]
+fn desfecho_sem_texto_nao_engole_a_opcao_seguinte() {
+    let f = fixture("tdn", Some("{}"));
+    two_projects(&f);
+    let before = f.read(Q);
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "status",
+        "q",
+        "--status",
+        "pausa",
+        "--desfecho",
+        "--retomar-em",
+        "2999-12-30",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "desfecho_obrigatorio", "{v}");
+    assert_eq!(f.read(Q), before);
+}
+
+#[test]
+fn projeto_assign_grava_owner_e_recusa_grupo() {
+    let f = fixture(
+        "tpa",
+        Some("{\"people\":{\"labs\":[\"[[Arthur]]\",\"[[Mayara]]\"]}}"),
+    );
+    two_projects(&f);
+
+    let (code, v) = f.json(&["tasks", "projects", "assign", "r", "--responsavel", "labs"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "responsavel_grupo", "{v}");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "assign",
+        "r",
+        "--responsavel",
+        "Mayara",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["path"], R, "{v}");
+    let (_, shown) = f.json(&["tasks", "show", R]);
+    assert_eq!(
+        shown["result"]["frontmatter"]["owner"], "[[Mayara]]",
+        "{shown}"
+    );
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "assign",
+        "r",
+        "--responsavel",
+        "Fulano",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "responsavel_desconhecido", "{v}");
+
+    let (code, v) = f.json(&["tasks", "projects", "list", "--responsavel", "Mayara"]);
+    assert_eq!(code, 0, "{v}");
+    let names: Vec<&str> = v["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["r"], "{v}");
+}
+
+#[test]
+fn projects_list_resume_tarefas_e_review_traz_quem_nao_tem_responsavel() {
+    let f = fixture("tpl", Some("{}"));
+    two_projects(&f);
+    task_linked(
+        &f.root,
+        "06-tarefas/Tasks/t1.md",
+        "[[q]]",
+        "timeEntries:\n  - startTime: \"2026-11-09T12:00:00Z\"\n    endTime: \"2026-11-09T13:00:00Z\"\n    description: \"pessoa: Arthur\"\n",
+    );
+
+    let (code, v) = f.json(&["tasks", "projects", "list"]);
+    assert_eq!(code, 0, "{v}");
+    let items = v["result"]["items"].as_array().unwrap();
+    let q_item = items.iter().find(|i| i["name"] == "q").expect("q listed");
+    assert_eq!(q_item["openTasks"], 1, "{v}");
+    assert_eq!(q_item["totalTasks"], 1, "{v}");
+    assert_eq!(q_item["owner"], "[[Arthur]]", "{v}");
+    assert_eq!(q_item["lastActivity"], "2026-11-09", "{v}");
+
+    let (code, v) = f.json(&["tasks", "projects", "review", "--responsavel", "Arthur"]);
+    assert_eq!(code, 0, "{v}");
+    let queue = v["result"]["queue"].as_array().unwrap();
+    let r_item = queue.iter().find(|i| i["name"] == "r").expect("r queued");
+    assert_eq!(r_item["reason"], "sem_responsavel", "{v}");
+    assert!(v["result"]["orphanLinks"].is_array(), "{v}");
+}
+
+#[test]
+fn projects_status_de_projeto_invalido_e_recusado() {
+    let f = fixture("tpi", Some("{}"));
+    two_projects(&f);
+    let (code, v) = f.json(&["tasks", "projects", "list", "--status", "ativo"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "invalid_project_status", "{v}");
+}
+
+#[test]
+fn projeto_milestone_grava_e_projects_mostra() {
+    let f = fixture("tms", Some("{}"));
+    two_projects(&f);
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "milestone",
+        "q",
+        "--marco",
+        "lançar",
+        "--data",
+        "2026-12-01",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["nextMilestone"], "lançar", "{v}");
+
+    let (_, listed) = f.json(&["tasks", "projects", "list"]);
+    let q_item = listed["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "q")
+        .expect("q listed")
+        .clone();
+    assert_eq!(q_item["nextMilestoneDate"], "2026-12-01", "{listed}");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "milestone",
+        "q",
+        "--marco",
+        "x",
+        "--data",
+        "ontem",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "data_invalida", "{v}");
+
+    let (code, v) = f.json(&["tasks", "projects", "milestone", "q", "--limpar"]);
+    assert_eq!(code, 0, "{v}");
+    let (_, shown) = f.json(&["tasks", "show", Q]);
+    assert!(
+        shown["result"]["frontmatter"]["nextMilestone"].is_null(),
+        "{shown}"
+    );
+}
+
+#[test]
+fn projeto_rename_status_ensaia_antes_de_trocar() {
+    let f = fixture("trs", Some("{}"));
+    two_projects(&f);
+    let velho = "02-marcas/Madame_Labs/Projetos/velho.md";
+    project_file(
+        &f.root,
+        velho,
+        "type: projeto\nbrand: \"[[Madame_Labs]]\"\nstatus: ativo\nowner: \"[[Arthur]]\"",
+    );
+    let before = f.read(velho);
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "rename-status",
+        "--de",
+        "ativo",
+        "--para",
+        "em-andamento",
+        "--dry-run",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["dryRun"], true, "{v}");
+    assert_eq!(v["result"]["paths"], serde_json::json!([velho]), "{v}");
+    assert_eq!(f.read(velho), before, "a dry run must not write");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "rename-status",
+        "--de",
+        "ativo",
+        "--para",
+        "em-andamento",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let (_, shown) = f.json(&["tasks", "show", velho]);
+    assert_eq!(
+        shown["result"]["frontmatter"]["status"], "em-andamento",
+        "{shown}"
+    );
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "rename-status",
+        "--de",
+        "ativo",
+        "--para",
+        "feito",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "invalid_project_status", "{v}");
+}
+
+#[test]
+fn projeto_com_mesmo_nome_em_duas_marcas_pede_o_caminho() {
+    let f = fixture("tpd", Some("{}"));
+    for brand in ["A", "B"] {
+        project_file(
+            &f.root,
+            &format!("02-marcas/{brand}/Projetos/dup.md"),
+            "type: projeto\nbrand: \"[[Madame_Labs]]\"\nstatus: em-andamento\nowner: \"[[Arthur]]\"",
+        );
+    }
+    let (code, v) = f.json(&["tasks", "projects", "status", "dup", "--status", "backlog"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "project_ambiguous", "{v}");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "status",
+        "02-marcas/A/Projetos/dup.md",
+        "--status",
+        "backlog",
+    ]);
+    assert_eq!(code, 0, "{v}");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "status",
+        "nao-existe",
+        "--status",
+        "backlog",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "project_not_found", "{v}");
 }

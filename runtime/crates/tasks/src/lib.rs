@@ -12,6 +12,7 @@ mod binding;
 mod config;
 mod create;
 mod plan;
+mod projects;
 mod timer;
 
 pub use binding::Binding;
@@ -19,6 +20,11 @@ pub use config::TasksConfig;
 pub use create::{NewTask, create, path_for, promote, resolve_person};
 pub use plan::{
     TaskView, archive, block, is_open, link_projects, set_status, skip, unblock, unskip, wikilink,
+};
+pub use projects::{
+    Orphan, ProjectItem, ProjectsSummary, ReviewItem, filter_queue_by_owner, is_valid_date,
+    list_projects, project_assign, project_milestone, project_name, project_rename_status,
+    project_review, project_status, projects_summary,
 };
 pub use timer::{OpenEntry, PERSON_PREFIX, open_entries, retime, start, stop};
 

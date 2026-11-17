@@ -14,7 +14,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
-use mdbn_tasks::{Binding, NewTask, OpenEntry, TaskError, TaskView, TasksConfig};
+use mdbn_tasks::{
+    Binding, NewTask, OpenEntry, ProjectItem, ProjectsSummary, ReviewItem, TaskError, TaskView,
+    TasksConfig, filter_queue_by_owner, list_projects, project_assign, project_milestone,
+    project_name, project_rename_status, project_review, project_status, projects_summary,
+};
 use mdbn_wire::Wire;
 use mdbn_wire::cbor::Cbor;
 use mdbn_wire::client::{PublishState, QueryResult, Receipt, RecordView};
@@ -35,6 +39,8 @@ const TASK_TYPE: &str = "task";
 const PERSON_CONTRACT: &str = "mdbase.person";
 /// The person type when no type implements the person contract.
 const PERSON_TYPE: &str = "pessoa";
+/// The type of the project notes.
+const PROJECT_TYPE: &str = "projeto";
 /// Records per `query` page; `list` and the other scans page until the end.
 const PAGE: u64 = 50;
 
@@ -207,6 +213,99 @@ pub(crate) enum TasksCmd {
     /// The time entries of a task.
     #[command(subcommand)]
     Timer(TimerCmd),
+    /// Project notes: status, owner, next milestone and review.
+    #[command(subcommand)]
+    Projects(ProjectsCmd),
+}
+
+/// `projects` subcommands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProjectsCmd {
+    /// Projects with their open and total tasks. Without `--status`, the open ones.
+    List {
+        #[command(flatten)]
+        target: Target,
+        /// Only the projects of this person (name or alias).
+        #[arg(long, value_name = "P")]
+        responsavel: Option<String>,
+        /// Only the projects with this status.
+        #[arg(long, value_name = "S")]
+        status: Option<String>,
+    },
+    /// Change a project's status. `aprovacao`, `pausa`, `concluido` and `cancelado`
+    /// need an outcome; `pausa` needs a resume date.
+    Status {
+        #[command(flatten)]
+        target: Target,
+        /// Project name or path.
+        projeto: String,
+        /// The new status.
+        #[arg(long, value_name = "S")]
+        status: String,
+        /// What the project ended in (required by the closing statuses).
+        #[arg(long, value_name = "T", num_args = 0..=1, default_missing_value = "")]
+        desfecho: Option<String>,
+        /// The day the project resumes (`pausa` only, after today).
+        #[arg(long = "retomar-em", value_name = "D", num_args = 0..=1, default_missing_value = "")]
+        retomar_em: Option<String>,
+        #[command(flatten)]
+        write: TaskWrite,
+    },
+    /// Set the owner of a project: one person, not a group.
+    Assign {
+        #[command(flatten)]
+        target: Target,
+        /// Project name or path.
+        projeto: String,
+        /// The person (name or alias).
+        #[arg(long, value_name = "P")]
+        responsavel: String,
+        #[command(flatten)]
+        write: TaskWrite,
+    },
+    /// Set or clear the next milestone.
+    Milestone {
+        #[command(flatten)]
+        target: Target,
+        /// Project name or path.
+        projeto: String,
+        /// The milestone text.
+        #[arg(long, value_name = "T", conflicts_with = "limpar")]
+        marco: Option<String>,
+        /// The day of the milestone (may be past).
+        #[arg(long, value_name = "D", requires = "marco", conflicts_with = "limpar")]
+        data: Option<String>,
+        /// Clear the milestone.
+        #[arg(long, conflicts_with = "marco")]
+        limpar: bool,
+        #[command(flatten)]
+        write: TaskWrite,
+    },
+    /// Rename a status value on every project that has it. Only the value changes.
+    RenameStatus {
+        #[command(flatten)]
+        target: Target,
+        /// The value to replace.
+        #[arg(long, value_name = "V")]
+        de: String,
+        /// The new value: a status of the task type.
+        #[arg(long, value_name = "P")]
+        para: String,
+        /// Report the projects that would change, without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The review queue: projects that need a decision, most urgent first.
+    Review {
+        #[command(flatten)]
+        target: Target,
+        /// The queue of this person, plus the projects without an owner.
+        #[arg(long, value_name = "P")]
+        responsavel: Option<String>,
+        /// Days without real activity after which an active project is stalled.
+        #[arg(long = "parado-ha", value_name = "N", default_value_t = 30)]
+        parado_ha: u32,
+    },
 }
 
 /// `timer` subcommands.
@@ -553,6 +652,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             )?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
         }
+        TasksCmd::Projects(cmd) => execute_projects(cmd, profile).await,
         TasksCmd::Timer(TimerCmd::Status {
             target,
             responsavel,
@@ -580,6 +680,121 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             Ok(Value::Array(out))
         }
     }
+}
+
+async fn execute_projects(cmd: ProjectsCmd, profile: &Profile) -> Result<Value, Failure> {
+    match cmd {
+        ProjectsCmd::List {
+            target,
+            responsavel,
+            status,
+        } => {
+            let mut s = Session::open(&target, profile, false).await?;
+            let owner = match &responsavel {
+                Some(who) => Some(s.one_person(who).await?),
+                None => None,
+            };
+            let summary = s.project_summary().await?;
+            let items = list_projects(
+                &s.binding,
+                &summary.items,
+                status.as_deref(),
+                owner.as_deref(),
+            )?;
+            Ok(json!({"items": items.iter().map(ProjectItem::to_json).collect::<Vec<_>>()}))
+        }
+        ProjectsCmd::Status {
+            target,
+            projeto,
+            status,
+            desfecho,
+            retomar_em,
+            write,
+        } => {
+            let mut s = Session::open(&target, profile, true).await?;
+            let project = s.find_project(&projeto).await?;
+            let op = project_status(
+                &s.binding,
+                &project,
+                &status,
+                none_if_empty(desfecho.as_deref()),
+                none_if_empty(retomar_em.as_deref()),
+                s.today()?,
+            )?;
+            s.write_project(&project, op, write.if_revision.as_deref())
+                .await
+        }
+        ProjectsCmd::Assign {
+            target,
+            projeto,
+            responsavel,
+            write,
+        } => {
+            let mut s = Session::open(&target, profile, false).await?;
+            let project = s.find_project(&projeto).await?;
+            let links = s.config_links(&responsavel)?;
+            let op = project_assign(&project, &links)?;
+            s.check_people(&links).await?;
+            s.write_project(&project, op, write.if_revision.as_deref())
+                .await
+        }
+        ProjectsCmd::Milestone {
+            target,
+            projeto,
+            marco,
+            data,
+            limpar,
+            write,
+        } => {
+            let mut s = Session::open(&target, profile, false).await?;
+            let project = s.find_project(&projeto).await?;
+            let op = project_milestone(&project, marco.as_deref(), data.as_deref(), limpar)?;
+            s.write_project(&project, op, write.if_revision.as_deref())
+                .await
+        }
+        ProjectsCmd::RenameStatus {
+            target,
+            de,
+            para,
+            dry_run,
+        } => {
+            let mut s = Session::open(&target, profile, false).await?;
+            let projects = s.project_views().await?;
+            let ops = project_rename_status(&s.binding, &projects, &de, &para)?;
+            let paths: Vec<String> = ops.iter().map(op_path).collect();
+            if let (false, Some(first)) = (dry_run, paths.first()) {
+                // One batch: every project changes, or none does.
+                s.apply_ops(first, ops, None).await?;
+            }
+            Ok(json!({"de": de, "para": para, "dryRun": dry_run, "paths": paths}))
+        }
+        ProjectsCmd::Review {
+            target,
+            responsavel,
+            parado_ha,
+        } => {
+            let mut s = Session::open(&target, profile, true).await?;
+            let owner = match &responsavel {
+                Some(who) => Some(s.one_person(who).await?),
+                None => None,
+            };
+            let summary = s.project_summary().await?;
+            let queue = project_review(&summary.items, s.today()?, parado_ha);
+            let queue = match &owner {
+                Some(link) => filter_queue_by_owner(queue, link),
+                None => queue,
+            };
+            Ok(json!({
+                "queue": queue.iter().map(ReviewItem::to_json).collect::<Vec<_>>(),
+                "orphanLinks": summary.orphans.iter().map(|o| json!({"name": o.name, "tasks": o.tasks})).collect::<Vec<_>>(),
+            }))
+        }
+    }
+}
+
+/// An option given without a value is `None`: the rules then refuse it as missing.
+fn none_if_empty(value: Option<&str>) -> Option<&str> {
+    value.filter(|v| !v.is_empty())
 }
 
 /// The local clock of a command. `utc` when the local offset cannot be read: the
@@ -653,21 +868,7 @@ impl Session {
     /// The one person a timer runs for. A name that stands for several people is
     /// refused: a timer has one owner.
     async fn timer_person(&mut self, who: &str) -> Result<String, Failure> {
-        let links = self.config_links(who)?;
-        match links.len() {
-            1 => {
-                self.check_people(&links).await?;
-                Ok(strip_link(&links[0]))
-            }
-            0 => Err(Failure::new(
-                "responsavel_desconhecido",
-                format!("{who} stands for no person"),
-            )),
-            _ => Err(Failure::new(
-                "responsavel_grupo",
-                format!("{who} stands for {} people; a timer needs one", links.len()),
-            )),
-        }
+        Ok(strip_link(&self.one_person(who).await?))
     }
 
     /// Every person link a planned write names (`assignees`) must have a person note.
@@ -713,6 +914,97 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// The one person a name or alias stands for, as a wikilink. A group is refused
+    /// (`responsavel_grupo`), and a name with no person note too.
+    async fn one_person(&mut self, who: &str) -> Result<String, Failure> {
+        let links = self.config_links(who)?;
+        match links.len() {
+            1 => {
+                self.check_people(&links).await?;
+                Ok(links[0].clone())
+            }
+            0 => Err(Failure::new(
+                "responsavel_desconhecido",
+                format!("{who} stands for no person"),
+            )),
+            n => Err(Failure::new(
+                "responsavel_grupo",
+                format!("{who} stands for {n} people; one is needed"),
+            )),
+        }
+    }
+
+    /// Every project note, with its revision.
+    async fn project_views(&mut self) -> Result<Vec<TaskView>, Failure> {
+        Ok(all_records(&mut self.t, &[PROJECT_TYPE])
+            .await?
+            .iter()
+            .map(view_of)
+            .collect())
+    }
+
+    /// The projects with their task counts, and the links that name no project.
+    async fn project_summary(&mut self) -> Result<ProjectsSummary, Failure> {
+        let projects = self.project_views().await?;
+        let tasks: Vec<TaskView> = all_records(&mut self.t, &[TASK_TYPE])
+            .await?
+            .iter()
+            .map(view_of)
+            .collect();
+        Ok(projects_summary(&self.binding, &projects, &tasks))
+    }
+
+    /// The project a name or a path refers to. A name shared by two projects is
+    /// `project_ambiguous`: the path is then needed. A link (`[[x|alias]]`) is read
+    /// as its target.
+    async fn find_project(&mut self, reference: &str) -> Result<TaskView, Failure> {
+        let raw = strip_link(reference);
+        let raw = raw.split('|').next().unwrap_or_default().to_string();
+        let projects = self.project_views().await?;
+        if let Some(found) = projects.iter().find(|p| p.path == raw) {
+            return Ok(found.clone());
+        }
+        let name = project_name(&raw);
+        let mut matches: Vec<&TaskView> = projects
+            .iter()
+            .filter(|p| project_name(&p.path) == name)
+            .collect();
+        match matches.len() {
+            0 => Err(Failure::new(
+                "project_not_found",
+                format!("no project named {raw}"),
+            )),
+            1 => Ok(matches.remove(0).clone()),
+            _ => {
+                let mut paths: Vec<&str> = matches.iter().map(|p| p.path.as_str()).collect();
+                paths.sort_unstable();
+                Err(Failure::new(
+                    "project_ambiguous",
+                    format!("{raw} names several projects: {}", paths.join(",")),
+                ))
+            }
+        }
+    }
+
+    /// Sends a project's planned write, and reports the project's name and the fields
+    /// it set.
+    async fn write_project(
+        &mut self,
+        project: &TaskView,
+        op: Value,
+        if_revision: Option<&str>,
+    ) -> Result<Value, Failure> {
+        let fields = op.get("fields").cloned().unwrap_or(Value::Null);
+        let mut out = self.write(&project.path, vec![op], if_revision).await?;
+        out["name"] = json!(project_name(&project.path));
+        if let Value::Object(set) = fields {
+            for (key, value) in set {
+                out[key] = value;
+            }
+        }
+        Ok(out)
     }
 
     /// The task at `path`, with the revision it is read at.

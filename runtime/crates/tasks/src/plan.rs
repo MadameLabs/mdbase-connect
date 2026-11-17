@@ -266,7 +266,7 @@ fn has_tag(t: &TaskView, b: &Binding) -> bool {
 
 /// The note name of a path or wikilink: no brackets, alias, heading, folder or
 /// `.md` extension.
-fn note_name(value: &str) -> String {
+pub(crate) fn note_name(value: &str) -> String {
     let inner = value.trim();
     let inner = inner.strip_prefix("[[").unwrap_or(inner);
     let inner = inner.strip_suffix("]]").unwrap_or(inner);
