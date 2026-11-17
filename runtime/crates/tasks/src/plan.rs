@@ -62,7 +62,10 @@ pub fn set_status(
         }
         None if b.is_closed(status) => {
             if !is_date(today) {
-                return Err(TaskError::new("invalid_date", format!("today {today} is not a date")));
+                return Err(TaskError::new(
+                    "invalid_date",
+                    format!("today {today} is not a date"),
+                ));
             }
             fields.insert(b.field("completedDate").to_string(), json!(today));
         }
@@ -74,6 +77,9 @@ pub fn set_status(
 /// Plans the project list of a task: the given projects replace the list, as
 /// wikilinks, without duplicates.
 pub fn link_projects(b: &Binding, t: &TaskView, projects: &[String]) -> Result<Value, TaskError> {
+    if projects.is_empty() {
+        return Err(TaskError::new("missing_project", "no project given"));
+    }
     let mut links: Vec<String> = Vec::new();
     for project in projects {
         let link = wikilink(project);
@@ -104,7 +110,10 @@ pub fn block(
     for blocker in blockers {
         let name = note_name(blocker);
         if name == me {
-            return Err(TaskError::new("task_cannot_block_itself", "a task cannot block itself"));
+            return Err(TaskError::new(
+                "task_cannot_block_itself",
+                "a task cannot block itself",
+            ));
         }
         if !existing.iter().any(|e| note_name(e) == name) {
             return Err(TaskError::new(
@@ -155,21 +164,30 @@ pub fn archive(b: &Binding, t: &TaskView) -> Result<Value, TaskError> {
 /// skipped changes nothing.
 pub fn skip(b: &Binding, t: &TaskView, date: &str) -> Result<Value, TaskError> {
     if !is_date(date) {
-        return Err(TaskError::new("invalid_date", format!("{date} is not a date")));
+        return Err(TaskError::new(
+            "invalid_date",
+            format!("{date} is not a date"),
+        ));
     }
     let mut skipped = list_of(t, b.field("skippedInstances"));
     if !skipped.iter().any(|v| v.as_str() == Some(date)) {
         skipped.push(json!(date));
     }
     let mut fields = Map::new();
-    fields.insert(b.field("skippedInstances").to_string(), Value::Array(skipped));
+    fields.insert(
+        b.field("skippedInstances").to_string(),
+        Value::Array(skipped),
+    );
     Ok(update(t, fields))
 }
 
 /// Plans undoing a skip of one occurrence.
 pub fn unskip(b: &Binding, t: &TaskView, date: &str) -> Result<Value, TaskError> {
     if !is_date(date) {
-        return Err(TaskError::new("invalid_date", format!("{date} is not a date")));
+        return Err(TaskError::new(
+            "invalid_date",
+            format!("{date} is not a date"),
+        ));
     }
     let kept: Vec<Value> = list_of(t, b.field("skippedInstances"))
         .into_iter()
@@ -213,12 +231,14 @@ fn update(t: &TaskView, fields: Map<String, Value>) -> Value {
     })
 }
 
+/// The list stored under `key`. A plain string counts as a one-item list, so a
+/// note written as `tags: task` keeps its tag; a missing key is an empty list.
 fn list_of(t: &TaskView, key: &str) -> Vec<Value> {
-    t.frontmatter
-        .get(key)
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
+    match t.frontmatter.get(key) {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::String(s)) => vec![Value::String(s.clone())],
+        _ => Vec::new(),
+    }
 }
 
 fn has_tag(t: &TaskView, b: &Binding) -> bool {

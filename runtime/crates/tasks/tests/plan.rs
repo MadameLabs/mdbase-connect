@@ -1,7 +1,10 @@
 //! Tests for the write planners over an existing task: status, projects,
 //! blockers, archive and skipped occurrences.
 
-use mdbn_tasks::{Binding, TaskView, archive, block, is_open, link_projects, set_status, skip, unblock, unskip, wikilink};
+use mdbn_tasks::{
+    Binding, TaskView, archive, block, is_open, link_projects, set_status, skip, unblock, unskip,
+    wikilink,
+};
 use serde_json::{Map, Value, json};
 
 const TASK_TYPE: &str = include_str!("fixtures/task-type.json");
@@ -66,7 +69,13 @@ fn data_de_conclusao_no_futuro_recusa() {
 fn data_de_conclusao_mal_formada_recusa() {
     let b = binding();
     let t = tarefa("06-tarefas/A.md", json!({}));
-    for ruim in ["17/11/2026", "2026-11-1", "2026-13-01", "2026-11-00", "hoje"] {
+    for ruim in [
+        "17/11/2026",
+        "2026-11-1",
+        "2026-13-01",
+        "2026-11-00",
+        "hoje",
+    ] {
         let err = set_status(&b, &t, "concluido", Some(ruim), HOJE).expect_err(ruim);
         assert_eq!(err.code, "invalid_completed_date", "{ruim}");
     }
@@ -84,15 +93,27 @@ fn status_fora_do_tipo_recusa() {
 fn sem_status_gravado_conta_como_backlog() {
     let b = binding();
     assert!(is_open(&b, &tarefa("06-tarefas/A.md", json!({}))));
-    assert!(!is_open(&b, &tarefa("06-tarefas/A.md", json!({"status": "cancelado"}))));
-    assert!(!is_open(&b, &tarefa("06-tarefas/A.md", json!({"status": "concluido"}))));
-    assert!(is_open(&b, &tarefa("06-tarefas/A.md", json!({"status": "pausa"}))));
+    assert!(!is_open(
+        &b,
+        &tarefa("06-tarefas/A.md", json!({"status": "cancelado"}))
+    ));
+    assert!(!is_open(
+        &b,
+        &tarefa("06-tarefas/A.md", json!({"status": "concluido"}))
+    ));
+    assert!(is_open(
+        &b,
+        &tarefa("06-tarefas/A.md", json!({"status": "pausa"}))
+    ));
 }
 
 #[test]
 fn arquivada_nao_e_aberta() {
     let b = binding();
-    let t = tarefa("06-tarefas/A.md", json!({"status": "pausa", "tags": ["task", "archived"]}));
+    let t = tarefa(
+        "06-tarefas/A.md",
+        json!({"status": "pausa", "tags": ["task", "archived"]}),
+    );
     assert!(!is_open(&b, &t));
 }
 
@@ -101,7 +122,26 @@ fn projetos_viram_wikilink_e_trocam_a_lista() {
     let b = binding();
     let t = tarefa("06-tarefas/A.md", json!({"projects": ["[[velho]]"]}));
     let op = link_projects(&b, &t, &["mdbase-tasks".to_string()]).expect("links");
-    assert_eq!(campos(&op).get("projects"), Some(&json!(["[[mdbase-tasks]]"])));
+    assert_eq!(
+        campos(&op).get("projects"),
+        Some(&json!(["[[mdbase-tasks]]"]))
+    );
+}
+
+#[test]
+fn projetos_vazios_recusa() {
+    let b = binding();
+    let t = tarefa("06-tarefas/A.md", json!({"projects": ["[[velho]]"]}));
+    let err = link_projects(&b, &t, &[]).expect_err("empty project list");
+    assert_eq!(err.code, "missing_project");
+}
+
+#[test]
+fn lista_gravada_como_texto_vira_um_item() {
+    let b = binding();
+    let t = tarefa("06-tarefas/A.md", json!({"tags": "task"}));
+    let op = archive(&b, &t).expect("archives");
+    assert_eq!(campos(&op).get("tags"), Some(&json!(["task", "archived"])));
 }
 
 #[test]
@@ -118,7 +158,10 @@ fn bloqueio_sem_duplicar_e_sem_si_mesmo() {
     let existing = ["06-tarefas/X.md".to_string()];
 
     let primeira = block(&b, &t, &["X.md".to_string()], &existing).expect("blocks");
-    let lista = campos(&primeira).get("blockedBy").cloned().expect("blockedBy");
+    let lista = campos(&primeira)
+        .get("blockedBy")
+        .cloned()
+        .expect("blockedBy");
     assert_eq!(lista, json!([{"uid": "[[X]]", "reltype": "FINISHTOSTART"}]));
 
     // Second block, now reading the list the first one wrote.
@@ -151,8 +194,13 @@ fn bloqueio_preserva_itens_existentes() {
 fn bloquear_por_si_mesma_recusa() {
     let b = binding();
     let t = tarefa("06-tarefas/A.md", json!({}));
-    let err = block(&b, &t, &["06-tarefas/A.md".to_string()], &["06-tarefas/A.md".to_string()])
-        .expect_err("self block");
+    let err = block(
+        &b,
+        &t,
+        &["06-tarefas/A.md".to_string()],
+        &["06-tarefas/A.md".to_string()],
+    )
+    .expect_err("self block");
     assert_eq!(err.code, "task_cannot_block_itself");
 }
 
@@ -160,7 +208,8 @@ fn bloquear_por_si_mesma_recusa() {
 fn bloqueador_fora_da_colecao_recusa() {
     let b = binding();
     let t = tarefa("06-tarefas/A.md", json!({}));
-    let err = block(&b, &t, &["Fantasma.md".to_string()], &["X.md".to_string()]).expect_err("unknown");
+    let err =
+        block(&b, &t, &["Fantasma.md".to_string()], &["X.md".to_string()]).expect_err("unknown");
     assert_eq!(err.code, "blocker_not_found");
 }
 
@@ -172,7 +221,10 @@ fn desbloquear_tira_pelo_nome_da_nota() {
         json!({"blockedBy": [{"uid": "[[06-tarefas/X]]", "reltype": "FINISHTOSTART"}, {"uid": "[[Fica]]"}]}),
     );
     let op = unblock(&b, &t, &["X.md".to_string()]).expect("unblocks");
-    assert_eq!(campos(&op).get("blockedBy"), Some(&json!([{"uid": "[[Fica]]"}])));
+    assert_eq!(
+        campos(&op).get("blockedBy"),
+        Some(&json!([{"uid": "[[Fica]]"}]))
+    );
 }
 
 #[test]
@@ -180,13 +232,19 @@ fn arquivar_acrescenta_a_tag() {
     let b = binding();
     let t = tarefa("06-tarefas/A.md", json!({"tags": ["task", "projeto-x"]}));
     let op = archive(&b, &t).expect("archives");
-    assert_eq!(campos(&op).get("tags"), Some(&json!(["task", "projeto-x", "archived"])));
+    assert_eq!(
+        campos(&op).get("tags"),
+        Some(&json!(["task", "projeto-x", "archived"]))
+    );
 }
 
 #[test]
 fn pular_e_desfazer_ocorrencia() {
     let b = binding();
-    let t = tarefa("06-tarefas/A.md", json!({"skipped_instances": ["2026-11-01"]}));
+    let t = tarefa(
+        "06-tarefas/A.md",
+        json!({"skipped_instances": ["2026-11-01"]}),
+    );
 
     let pulada = skip(&b, &t, "2026-11-08").expect("skips");
     assert_eq!(
@@ -195,7 +253,10 @@ fn pular_e_desfazer_ocorrencia() {
     );
 
     let repetida = skip(&b, &t, "2026-11-01").expect("skip twice is harmless");
-    assert_eq!(campos(&repetida).get("skipped_instances"), Some(&json!(["2026-11-01"])));
+    assert_eq!(
+        campos(&repetida).get("skipped_instances"),
+        Some(&json!(["2026-11-01"]))
+    );
 
     let desfeita = unskip(&b, &t, "2026-11-01").expect("unskips");
     assert_eq!(campos(&desfeita).get("skipped_instances"), Some(&json!([])));
