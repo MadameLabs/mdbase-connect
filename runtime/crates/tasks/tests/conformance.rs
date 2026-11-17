@@ -378,7 +378,7 @@ fn delete_remove_recusa_remover_com_links_quebrados_sem_force() {
 fn op_complete_nonrecurring_ja_fechada_mantem_a_data() {
     let r = value(
         "op.complete_nonrecurring",
-        json!({"frontmatter": {"title": "B", "status": "done", "completedDate": "2026-02-19"}, "completedValues": ["done", "cancelled"], "explicitDate": "2026-02-20"}),
+        json!({"frontmatter": {"title": "B", "status": "done", "completedDate": "2026-02-19"}, "completedValues": ["done", "cancelled"]}),
     );
     assert_eq!(r, json!({"status": "done", "completedDate": "2026-02-19"}));
 }

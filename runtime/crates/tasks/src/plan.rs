@@ -35,13 +35,20 @@ pub fn set_status(
     completed_date: Option<&str>,
     today: &str,
 ) -> Result<Value, TaskError> {
-    Ok(update(t, status_fields(b, status, completed_date, today)?))
+    Ok(update(
+        t,
+        status_fields(b, &t.frontmatter, status, completed_date, today)?,
+    ))
 }
 
 /// The status fields of a write: the status, plus `completedDate` when the status
 /// closes the task. Shared by `set_status` and the timer, so both close alike.
+///
+/// Re-closing a task that is already closed keeps its `completedDate`, unless a date
+/// is given. The task's own frontmatter is read for that: `existing`.
 pub(crate) fn status_fields(
     b: &Binding,
+    existing: &Map<String, Value>,
     status: &str,
     completed_date: Option<&str>,
     today: &str,
@@ -67,6 +74,17 @@ pub(crate) fn status_fields(
             fields.insert(b.field("completedDate").to_string(), json!(date));
         }
         None if b.is_closed(status) => {
+            let current = existing.get(b.field("status")).and_then(Value::as_str);
+            let kept = existing
+                .get(b.field("completedDate"))
+                .and_then(Value::as_str)
+                .filter(|d| is_date(d));
+            if let (Some(current), Some(kept)) = (current, kept) {
+                if b.is_closed(current) {
+                    fields.insert(b.field("completedDate").to_string(), json!(kept));
+                    return Ok(fields);
+                }
+            }
             if !is_date(today) {
                 return Err(TaskError::new(
                     "invalid_date",

@@ -319,3 +319,25 @@ fn apagar_nota_com_backlink_quebrado_recusa_sem_force() {
         "backlinks not checked"
     );
 }
+
+#[test]
+fn fechar_de_novo_mantem_a_data_original() {
+    let b = binding();
+    let t = tarefa(
+        "06-tarefas/A.md",
+        json!({"status": "concluido", "completedDate": "2026-11-10"}),
+    );
+    let op = set_status(&b, &t, "concluido", None, HOJE).expect("re-closes");
+    assert_eq!(campos(&op).get("completedDate"), Some(&json!("2026-11-10")));
+}
+
+#[test]
+fn data_explicita_substitui_ao_fechar_de_novo() {
+    let b = binding();
+    let t = tarefa(
+        "06-tarefas/A.md",
+        json!({"status": "concluido", "completedDate": "2026-11-10"}),
+    );
+    let op = set_status(&b, &t, "concluido", Some("2026-11-12"), HOJE).expect("re-closes");
+    assert_eq!(campos(&op).get("completedDate"), Some(&json!("2026-11-12")));
+}

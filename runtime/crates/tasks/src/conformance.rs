@@ -293,25 +293,17 @@ fn completed_values(input: &Map<String, Value>) -> Result<Vec<String>, OpError> 
     }
 }
 
-/// Closes a frontmatter through the crate's `set_status`. A task already closed with a
-/// completed date keeps both; otherwise the status is the first completed value and
-/// the date is `explicit`, else today.
+/// Closes a frontmatter through the crate's `set_status`: the first completed value,
+/// with `explicit` as the date (else today, or the kept date of a task already closed).
 fn complete(
     frontmatter: &Map<String, Value>,
     completed: &[String],
     explicit: Option<&str>,
     today: &str,
 ) -> Result<(String, String), OpError> {
-    let current = frontmatter.get("status").and_then(Value::as_str);
-    let stored = frontmatter.get("completedDate").and_then(Value::as_str);
-    if let (Some(status), Some(date)) = (current, stored) {
-        if completed.iter().any(|c| c == status) {
-            return Ok((status.to_string(), date.to_string()));
-        }
-    }
     let target = completed.first().cloned().unwrap_or_default();
     let mut statuses = completed.to_vec();
-    if let Some(status) = current {
+    if let Some(status) = frontmatter.get("status").and_then(Value::as_str) {
         statuses.push(status.to_string());
     }
     let b = status_binding(&statuses, completed);

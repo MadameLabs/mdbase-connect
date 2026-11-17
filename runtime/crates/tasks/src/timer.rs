@@ -87,7 +87,7 @@ pub fn stop(
             format!("stop needs a status of the task type, not {status:?}"),
         ));
     }
-    let mut fields = status_fields(b, status, None, today)?;
+    let mut fields = status_fields(b, &t.frontmatter, status, None, today)?;
 
     let mut entries = entries_of(b, t);
     let own: Vec<usize> = (0..entries.len())
