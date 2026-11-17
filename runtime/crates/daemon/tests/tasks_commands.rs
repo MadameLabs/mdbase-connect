@@ -942,3 +942,119 @@ fn gate_nunca_falha_com_stdin_invalido() {
         );
     }
 }
+
+#[test]
+fn gate_agente_desconhecido_tem_envelope() {
+    let f = fixture("tga", Some("{}"));
+    let out = f.run_stdin(
+        &["tasks", "gate", "--agent", "inventado"],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(
+        v["hookSpecificOutput"]["hookEventName"], "SessionStart",
+        "{v}"
+    );
+    assert!(
+        v["hookSpecificOutput"]["additionalContext"].is_string(),
+        "{v}"
+    );
+}
+
+#[test]
+fn gate_sem_colecao_da_envelope_minimo() {
+    let f = fixture("tgm", Some("{}"));
+    // An empty folder: no collection, so no `task` type to read the statuses from.
+    let empty =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tgm-vazia{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&empty);
+    std::fs::create_dir_all(&empty).unwrap();
+    let elsewhere = Fixture {
+        root: empty,
+        state: f.state.clone(),
+    };
+    let out = elsewhere.run_stdin(
+        &["tasks", "gate", "--agent", "claude"],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    assert_eq!(v["ok"], true, "{v}");
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ctx.contains("O contexto completo não pôde ser montado"),
+        "{ctx}"
+    );
+    assert!(
+        !ctx.contains("Listar:"),
+        "the minimal context has no commands: {ctx}"
+    );
+}
+
+#[test]
+fn gate_sem_perfil_da_envelope_minimo() {
+    // No `--state-dir` and no HOME: the profile cannot be resolved.
+    let f = fixture("tgp", Some("{}"));
+    let out = Command::new(env!("CARGO_BIN_EXE_mdbase"))
+        .args(["tasks", "gate", "--agent", "claude", "-C"])
+        .arg(&f.root)
+        .env_remove("HOME")
+        .env_remove("MDBASE_HOME")
+        .env("USER", "ninguem")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let v = gate_envelope(&out);
+    assert_eq!(v["ok"], true, "{v}");
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(ctx.contains("profile_unavailable"), "{ctx}");
+}
+
+#[test]
+fn gate_usa_status_do_tipo() {
+    let f = fixture("tgt2", Some("{}"));
+    // The collection's type names its statuses otherwise than the rules do.
+    let mut def: Value = serde_json::from_str(TASK_TYPE).unwrap();
+    let status = &mut def["implements"][0]["binding"]["status"];
+    status["values"] = serde_json::json!(["rascunho", "feito", "descartado"]);
+    status["default"] = serde_json::json!("rascunho");
+    status["completed_values"] = serde_json::json!(["feito"]);
+    status["definitions"] = serde_json::json!([]);
+    let schema_status = &mut def["schema"]["value"]["properties"]["status"];
+    schema_status["enum"] = serde_json::json!(["rascunho", "feito", "descartado"]);
+    schema_status["default"] = serde_json::json!("rascunho");
+    std::fs::write(
+        f.root.join("_types/task.md"),
+        format!(
+            "---\n{}\n---\n",
+            serde_json::to_string_pretty(&def).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let out = f.run_stdin(
+        &["tasks", "gate", "--agent", "claude"],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(ctx.contains("--status feito antes de a seguinte"), "{ctx}");
+    assert!(ctx.contains("rascunho (status do tipo task)"), "{ctx}");
+    assert!(ctx.contains("feito (status do tipo task)"), "{ctx}");
+    assert!(ctx.contains("descartado (status do tipo task)"), "{ctx}");
+    for fixed in ["concluido", "aprovacao", "cancelado", "--status concluido"] {
+        assert!(
+            !ctx.contains(fixed),
+            "{fixed} is the rules' name, not the type's: {ctx}"
+        );
+    }
+}

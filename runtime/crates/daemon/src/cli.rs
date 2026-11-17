@@ -59,6 +59,11 @@ pub fn main() -> ExitCode {
     let profile = match Profile::resolve(cli.state_dir.as_deref()) {
         Ok(p) => p,
         Err(e) => {
+            // The SessionStart gate never fails: it answers with its envelope even
+            // when no profile can be resolved.
+            if let Command::Tasks(crate::tasks::TasksCmd::Gate { agent, .. }) = &cli.command {
+                return crate::tasks::gate_without_profile(agent, &e.to_string());
+            }
             eprintln!("error: {e}");
             return ExitCode::from(2);
         }
