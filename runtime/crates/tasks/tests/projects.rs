@@ -678,3 +678,36 @@ fn o_nome_do_projeto_vem_do_caminho_ou_do_link() {
     assert_eq!(project_name("02-marcas/a/Projetos/p.md"), "p");
     assert_eq!(project_name("[[02-marcas/a/Projetos/p|P]]"), "p");
 }
+
+// --- project paths (review fix: the template is not a project) ---
+
+#[test]
+fn path_matches_asterisco_fica_num_segmento() {
+    use mdbn_tasks::path_matches;
+    let p = "02-marcas/*/Projetos/*.md";
+    assert!(path_matches(p, "02-marcas/madame-labs/Projetos/x.md"));
+    assert!(!path_matches(p, "08-templates/projeto.md"));
+    assert!(!path_matches(p, "02-marcas/a/b/Projetos/x.md"));
+    assert!(!path_matches(p, "02-marcas/madame-labs/Projetos/x.md.bak"));
+    assert!(path_matches(
+        "02-marcas/*/Projetos/*",
+        "02-marcas/a/Projetos/x.md"
+    ));
+    assert!(!path_matches(
+        "02-marcas/Projetos",
+        "02-marcas/Projetos/x.md"
+    ));
+}
+
+#[test]
+fn config_sem_project_paths_aceita_todo_projeto() {
+    use mdbn_tasks::{TasksConfig, is_project_path};
+    let vazio = TasksConfig::default();
+    assert!(is_project_path(&vazio, "08-templates/projeto.md"));
+    let com =
+        TasksConfig::from_json(&json!({"project_paths": ["02-marcas/*/Projetos/*.md"]})).unwrap();
+    assert!(is_project_path(&com, "02-marcas/a/Projetos/x.md"));
+    assert!(!is_project_path(&com, "08-templates/projeto.md"));
+    let invalido = TasksConfig::from_json(&json!({"project_paths": "02-marcas/*"}));
+    assert_eq!(invalido.unwrap_err().code, "config_invalid");
+}

@@ -19,7 +19,7 @@ use serde_json::{Map, Value, json};
 
 use crate::plan::{list_of, note_name, update};
 use crate::timer::{civil_from_days, days_from_civil, days_in_month};
-use crate::{Binding, TaskError, TaskView, wikilink};
+use crate::{Binding, TaskError, TaskView, TasksConfig, wikilink};
 
 /// Statuses that keep the project open: they clear outcome, outcome date and resume.
 const OPEN: [&str; 3] = ["backlog", "to-do", "em-andamento"];
@@ -347,6 +347,32 @@ pub fn list_projects(
         })
         .cloned()
         .collect())
+}
+
+/// Whether a record at `path` is a project note under the collection's config: any
+/// path when the config names no project paths, otherwise one that matches a pattern.
+pub fn is_project_path(config: &TasksConfig, path: &str) -> bool {
+    config.project_paths.is_empty() || config.project_paths.iter().any(|p| path_matches(p, path))
+}
+
+/// Whether a collection path matches a glob pattern. `*` matches any run of
+/// characters within one path segment (never a `/`); everything else matches itself.
+/// The whole path must match.
+pub fn path_matches(pattern: &str, path: &str) -> bool {
+    glob_match(pattern.as_bytes(), path.as_bytes())
+}
+
+fn glob_match(pattern: &[u8], path: &[u8]) -> bool {
+    match pattern.split_first() {
+        None => path.is_empty(),
+        Some((b'*', rest)) => {
+            let segment = path.iter().position(|&c| c == b'/').unwrap_or(path.len());
+            (0..=segment).any(|i| glob_match(rest, &path[i..]))
+        }
+        Some((&c, rest)) => path
+            .split_first()
+            .is_some_and(|(&pc, path_rest)| pc == c && glob_match(rest, path_rest)),
+    }
 }
 
 /// The name a project is known by, from its path or a link to it: the note name.

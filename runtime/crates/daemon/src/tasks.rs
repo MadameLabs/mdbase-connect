@@ -16,8 +16,9 @@ use std::process::ExitCode;
 use clap::{Args, Subcommand};
 use mdbn_tasks::{
     Binding, NewTask, OpenEntry, ProjectItem, ProjectsSummary, ReviewItem, TaskError, TaskView,
-    TasksConfig, filter_queue_by_owner, list_projects, project_assign, project_milestone,
-    project_name, project_rename_status, project_review, project_status, projects_summary,
+    TasksConfig, filter_queue_by_owner, is_project_path, list_projects, project_assign,
+    project_milestone, project_name, project_rename_status, project_review, project_status,
+    projects_summary,
 };
 use mdbn_wire::Wire;
 use mdbn_wire::cbor::Cbor;
@@ -936,12 +937,15 @@ impl Session {
         }
     }
 
-    /// Every project note, with its revision.
+    /// Every project note, with its revision: the records of the project type that
+    /// the config's project paths admit (all of them when it names none).
     async fn project_views(&mut self) -> Result<Vec<TaskView>, Failure> {
+        let config = self.config();
         Ok(all_records(&mut self.t, &[PROJECT_TYPE])
             .await?
             .iter()
             .map(view_of)
+            .filter(|view| is_project_path(&config, &view.path))
             .collect())
     }
 

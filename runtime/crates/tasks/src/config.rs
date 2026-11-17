@@ -20,6 +20,9 @@ pub struct TasksConfig {
     pub refused_assignees: BTreeMap<String, String>,
     /// Status a new task starts with, when the collection sets one.
     pub initial_status: Option<String>,
+    /// Glob patterns of the paths where project notes live (`*` matches within one
+    /// path segment). Empty: every record of the `projeto` type is a project.
+    pub project_paths: Vec<String>,
 }
 
 impl TasksConfig {
@@ -72,11 +75,17 @@ impl TasksConfig {
             Some(_) => return Err(invalid("initial_status must be a string")),
         };
 
+        let project_paths = match obj.get("project_paths") {
+            None => Vec::new(),
+            Some(value) => strings(value, "project_paths")?,
+        };
+
         Ok(TasksConfig {
             required_on_create,
             people,
             refused_assignees,
             initial_status,
+            project_paths,
         })
     }
 }

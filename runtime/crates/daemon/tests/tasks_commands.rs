@@ -681,3 +681,44 @@ fn projeto_com_mesmo_nome_em_duas_marcas_pede_o_caminho() {
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["error"], "project_not_found", "{v}");
 }
+
+#[test]
+fn molde_fora_dos_caminhos_nao_e_projeto() {
+    let f = fixture(
+        "tmo",
+        Some("{\"project_paths\":[\"02-marcas/*/Projetos/*.md\"]}"),
+    );
+    two_projects(&f);
+    // The template has the project type, but lives outside the project paths.
+    project_file(
+        &f.root,
+        "08-templates/projeto.md",
+        "type: projeto\nbrand: \"[[NOME_DA_MARCA]]\"\nstatus: backlog\nowner: \"[[NOME_DA_PESSOA]]\"",
+    );
+
+    let (code, v) = f.json(&["tasks", "projects", "review"]);
+    assert_eq!(code, 0, "{v}");
+    let names: Vec<&str> = v["result"]["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"projeto"), "{v}");
+
+    let (code, v) = f.json(&["tasks", "projects", "list"]);
+    assert_eq!(code, 0, "{v}");
+    let names: Vec<&str> = v["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"projeto"), "{v}");
+
+    let (code, v) = f.json(&[
+        "tasks", "projects", "status", "projeto", "--status", "backlog",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "project_not_found", "{v}");
+}
