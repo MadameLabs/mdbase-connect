@@ -218,6 +218,14 @@ pub(crate) enum TasksCmd {
     /// Project notes: status, owner, next milestone and review.
     #[command(subcommand)]
     Projects(ProjectsCmd),
+    /// The conformance adapter's entry point: reads one operation's input object from
+    /// stdin and prints one envelope (`ok`, `result` or `error`/`error_details`).
+    /// Always exits 0; never panics.
+    #[command(hide = true)]
+    Exec {
+        /// The operation name, as the tasknotes-spec suite names it.
+        operation: String,
+    },
     /// The SessionStart hook: prints the gate's context in the host's envelope on
     /// stdout. Reads the hook payload from stdin; always exits 0.
     Gate {
@@ -367,6 +375,39 @@ pub(crate) struct TaskWrite {
     if_revision: Option<String>,
 }
 
+/// `tasks exec <operation>`: reads the input object from stdin, prints the envelope.
+/// Needs no profile, daemon or collection. Failures, including a panic in the
+/// operation, come back as an envelope with exit 0.
+pub(crate) fn exec(operation: &str) -> ExitCode {
+    let mut raw = String::new();
+    let outcome = match std::io::stdin().read_to_string(&mut raw) {
+        Err(e) => Err(mdbn_tasks::conformance::OpError {
+            code: "invalid_input",
+            message: format!("cannot read stdin: {e}"),
+            field: None,
+        }),
+        Ok(_) => match serde_json::from_str::<Value>(&raw) {
+            Err(e) => Err(mdbn_tasks::conformance::OpError {
+                code: "invalid_input",
+                message: format!("stdin is not JSON: {e}"),
+                field: None,
+            }),
+            Ok(input) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mdbn_tasks::conformance::execute(operation, &input, &clock().today)
+            }))
+            .unwrap_or_else(|_| {
+                Err(mdbn_tasks::conformance::OpError {
+                    code: "internal",
+                    message: format!("operation {operation} failed unexpectedly"),
+                    field: None,
+                })
+            }),
+        },
+    };
+    println!("{}", mdbn_tasks::conformance::envelope(operation, outcome));
+    ExitCode::SUCCESS
+}
+
 /// Runs a task command and prints its result.
 pub(crate) async fn run(cmd: TasksCmd, profile: &Profile, json: bool) -> ExitCode {
     // The gate prints its own envelope, whatever `--json` says.
@@ -453,6 +494,10 @@ impl From<ClientError> for Failure {
 
 async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
     match cmd {
+        TasksCmd::Exec { .. } => Err(Failure::new(
+            "internal",
+            "exec runs before a profile is resolved",
+        )),
         TasksCmd::List {
             target,
             responsavel,

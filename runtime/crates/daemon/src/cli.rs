@@ -56,6 +56,10 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(20);
 /// Entry point for the `mdbase` binary.
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
+    // The conformance adapter's entry point needs no profile, daemon or collection.
+    if let Command::Tasks(crate::tasks::TasksCmd::Exec { operation }) = &cli.command {
+        return crate::tasks::exec(operation);
+    }
     let profile = match Profile::resolve(cli.state_dir.as_deref()) {
         Ok(p) => p,
         Err(e) => {

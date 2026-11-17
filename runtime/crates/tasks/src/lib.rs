@@ -10,6 +10,7 @@
 
 mod binding;
 mod config;
+pub mod conformance;
 mod create;
 mod plan;
 mod projects;

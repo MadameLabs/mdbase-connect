@@ -1058,3 +1058,72 @@ fn gate_usa_status_do_tipo() {
         );
     }
 }
+
+/// `tasks exec` (hidden): one envelope on stdout, exit 0, for any stdin.
+fn exec_envelope(operation: &str, stdin: &[u8]) -> Value {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mdbase"))
+        .args(["tasks", "exec", operation])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+#[test]
+fn exec_operacao_fora_do_contrato_da_envelope() {
+    let v = exec_envelope("no.such.op", b"{}");
+    assert_eq!(v["ok"], false, "{v}");
+    assert!(v["error"].is_string(), "{v}");
+    assert_eq!(v["error_details"]["operation"], "no.such.op", "{v}");
+    assert_eq!(v["error_details"]["code"], "unsupported_operation", "{v}");
+    assert!(v["error_details"]["message"].is_string(), "{v}");
+}
+
+#[test]
+fn exec_entrada_invalida_da_envelope() {
+    for stdin in [&b""[..], b"isto nao e json", b"[1,2,3]"] {
+        let v = exec_envelope("meta.claim", stdin);
+        assert_eq!(v["ok"], false, "{v}");
+        assert_eq!(v["error_details"]["code"], "invalid_input", "{v}");
+    }
+}
+
+#[test]
+fn exec_meta_claim_declara_o_perfil_e_as_capacidades() {
+    let v = exec_envelope("meta.claim", b"{}");
+    assert_eq!(v["ok"], true, "{v}");
+    let r = &v["result"];
+    assert_eq!(r["implementation"], "mdbase-tasks (MadameLabs)", "{v}");
+    assert_eq!(r["profiles"], serde_json::json!(["core-lite"]), "{v}");
+    assert_eq!(
+        r["capabilities"],
+        serde_json::json!(["dependencies", "time-tracking", "archive"]),
+        "{v}"
+    );
+    assert_eq!(r["validation_modes"], serde_json::json!(["strict"]), "{v}");
+    assert_eq!(r["spec_version"], "0.3.0", "{v}");
+    assert!(r["version"].is_string(), "{v}");
+}
+
+#[test]
+fn exec_fica_fora_da_ajuda() {
+    let out = Command::new(env!("CARGO_BIN_EXE_mdbase"))
+        .args(["tasks", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!text.contains("exec"), "{text}");
+}
