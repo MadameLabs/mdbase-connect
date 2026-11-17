@@ -34,7 +34,21 @@ TUNEL=$(awk '$1 == "tunnel:" { print $2; exit }' "$CFG" | tr -d "\"'")
 [[ -n $TUNEL ]] || falha "nome do túnel não encontrado em $CFG"
 
 TMP=$(mktemp "$DESTINO/.cfg.XXXXXX")
-trap 'rm -f "$TMP"' EXIT
+RESTAURAR=0
+CONCLUIDO=0
+BAK=""
+limpar() {
+  local st=$?
+  rm -f "$TMP"
+  if [[ $RESTAURAR -eq 1 && $CONCLUIDO -eq 0 ]]; then
+    echo "[desfazer] FALHA depois de gravar o config.yml: restaurando $BAK" >&2
+    cp -p "$BAK" "$CFG" || echo "[desfazer] ERRO: restaurar à mão de $BAK" >&2
+    systemctl restart cloudflared || true
+    estado_final
+  fi
+  exit "$st"
+}
+trap limpar EXIT
 awk -v hosts="$HOSTS_NEXT" '
   BEGIN { n = split(hosts, lista, "|"); for (i = 1; i <= n; i++) alvo[lista[i]] = 1 }
   skip { skip = 0; if ($0 ~ /^[[:space:]]*service:/) next }
@@ -54,7 +68,7 @@ if cmp -s "$CFG" "$TMP"; then
   exit 0
 fi
 
-cloudflared --config "$TMP" tunnel ingress validate || falha "config sem as regras reprovado: nada foi trocado"
+cloudflared tunnel --config "$TMP" ingress validate || falha "config sem as regras reprovado: nada foi trocado"
 if grep -qE 'hostname:[[:space:]]*"?(next|next-log)\.madamelabs\.com\.br' "$TMP"; then
   falha "ainda há regra desta pilha no config novo: nada foi trocado"
 fi
@@ -63,8 +77,9 @@ fi
 BAK="$CFG.antes-desfazer-mdbase-next.$(date +%Y%m%d-%H%M%S)"
 cp -p "$CFG" "$BAK"
 log "cópia do config.yml feita: $BAK"
+RESTAURAR=1
 cat "$TMP" > "$CFG"
-systemctl restart cloudflared
+systemctl restart cloudflared || true  # a falha cai no verifica(), que restaura
 
 verifica() {
   local t=0
@@ -76,12 +91,10 @@ verifica() {
 }
 
 if verifica; then
+  CONCLUIDO=1
   log "regras de next e next-log tiradas; cloudflared e connect respondem"
 else
-  log "FALHA: cloudflared ou connect não respondem com o config novo; restaurando $BAK"
-  cp -p "$BAK" "$CFG"
-  systemctl restart cloudflared || true
-  estado_final
+  log "FALHA: cloudflared ou connect não respondem com o config novo; o trap restaura $BAK"
   exit 1
 fi
 

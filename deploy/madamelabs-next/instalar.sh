@@ -132,7 +132,7 @@ livre=$(df -B1 --output=avail "$raiz_docker" | tail -1 | tr -d ' ')
 [[ $livre -ge $((10 * 1024 * 1024 * 1024)) ]] || falha "menos de 10 GiB livres em $raiz_docker"
 
 # O validador tem que rejeitar um config quebrado; senão não serve de guarda.
-TMP_CHECK=$(mktemp "$DESTINO/.check.XXXXXX")
+TMP_CHECK=$(mktemp)  # em /tmp (umask 077): não depende de $DESTINO existir
 printf 'tunnel: teste\ningress:\n  - hostname: sem-catch-all.exemplo.invalido\n    service: http://127.0.0.1:1\n' > "$TMP_CHECK"
 if cloudflared tunnel --config "$TMP_CHECK" ingress validate >/dev/null 2>&1; then
   falha "o cloudflared aceitou um config sem catch-all: o validador não serve de guarda"
@@ -242,7 +242,10 @@ espera_http "http://127.0.0.1:$PORTA_LOG/health" '^200$' 120
 TUNEL=$(awk '$1 == "tunnel:" { print $2; exit }' "$CFG" | tr -d "\"'")
 [[ -n $TUNEL ]] || falha "nome do túnel não encontrado em $CFG"
 
-tem_regra() { grep -qE "^[[:space:]]*-[[:space:]]*hostname:[[:space:]]*[\"']?$1[\"']?[[:space:]]*$" "$CFG"; }
+tem_regra() {
+  local re=${1//./\.}  # ponto escapado: o host é literal, não curinga
+  grep -qE "^[[:space:]]*-[[:space:]]*hostname:[[:space:]]*[\"']?$re[\"']?[[:space:]]*$" "$CFG"
+}
 ADD_PORTAL=1; ADD_LOG=1
 tem_regra "$HOST_PORTAL" && ADD_PORTAL=0
 tem_regra "$HOST_LOG" && ADD_LOG=0
@@ -290,7 +293,8 @@ if [[ $ADD_PORTAL -eq 1 || $ADD_LOG -eq 1 ]]; then
   CFG_MUDOU=1
   cat "$TMP_CFG" > "$CFG"
   rm -f "$TMP_CFG"; TMP_CFG=""
-  systemctl restart cloudflared
+  # Entre a gravação e o CONCLUIDO=1 qualquer falha cai no trap, que restaura a cópia desta execução.
+  systemctl restart cloudflared || true
   systemctl is-active --quiet cloudflared || falha "cloudflared não voltou"
   log "cloudflared reiniciado com as regras"
 else
