@@ -243,7 +243,7 @@ TUNEL=$(awk '$1 == "tunnel:" { print $2; exit }' "$CFG" | tr -d "\"'")
 [[ -n $TUNEL ]] || falha "nome do túnel não encontrado em $CFG"
 
 tem_regra() {
-  local re=${1//./\.}  # ponto escapado: o host é literal, não curinga
+  local re=${1//./\\.}  # ponto escapado: o host é literal, não curinga
   grep -qE "^[[:space:]]*-[[:space:]]*hostname:[[:space:]]*[\"']?$re[\"']?[[:space:]]*$" "$CFG"
 }
 ADD_PORTAL=1; ADD_LOG=1
