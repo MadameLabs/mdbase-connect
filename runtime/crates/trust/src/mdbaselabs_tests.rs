@@ -12,8 +12,8 @@ const ASSET: &[u8] = include_bytes!("../../../../config/next-trust/mdbaselabs.js
 const CONTROL_PLANE: &str = "https://next.madamelabs.com.br";
 const LOG: &str = "https://next-log.madamelabs.com.br";
 const COMMIT: &str = "dd8ca8e3c3677e805ca88d37bf869a84dfc8ac06";
-const VERSION: &str = "0.0.0";
-const SHA256: &str = "54fd2d130871b0e401881eaea52eb20024d391ebe228dcf93d75dcbf51c3f696";
+const VERSION: &str = "0.1.0-mdbaselabs.1";
+const SHA256: &str = "7198ea4483401975354a26634fcc6f5e298ce236ed852a63de5281c2adfe3f96";
 
 /// The issue time recorded in the asset itself (a verify at this instant succeeds).
 fn issued() -> u64 {
@@ -37,7 +37,7 @@ fn context() -> Context {
 
 #[test]
 fn checked_in_asset_is_the_pinned_bytes_and_fields() {
-    assert_eq!(ASSET.len(), 847);
+    assert_eq!(ASSET.len(), 860);
     assert_eq!(
         sha2::Sha256::digest(ASSET).as_slice(),
         context().sha256,

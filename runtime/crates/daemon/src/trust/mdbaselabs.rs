@@ -13,7 +13,7 @@ pub(super) const ASSET: &[u8] = include_bytes!("../../../../../config/next-trust
 
 /// SHA-256 of [`ASSET`].
 pub(super) const ASSET_SHA256: &str =
-    "54fd2d130871b0e401881eaea52eb20024d391ebe228dcf93d75dcbf51c3f696";
+    "7198ea4483401975354a26634fcc6f5e298ce236ed852a63de5281c2adfe3f96";
 
 /// The asset's authenticated context: origin, log origin and source come from the
 /// release of this asset, never from the payload.
@@ -26,7 +26,7 @@ pub(super) fn context() -> Result<Context, Invalid> {
         source: Source {
             repository: REPOSITORY.into(),
             commit: "dd8ca8e3c3677e805ca88d37bf869a84dfc8ac06".into(),
-            version: "0.0.0".into(),
+            version: "0.1.0-mdbaselabs.1".into(),
         },
     })
 }

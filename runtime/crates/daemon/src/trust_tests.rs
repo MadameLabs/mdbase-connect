@@ -383,7 +383,7 @@ fn mdbaselabs_embeds_exactly_the_test_asset() {
         "https://next.madamelabs.com.br"
     );
     let context = mdbaselabs::context().unwrap();
-    assert_eq!(mdbaselabs::ASSET.len(), 847);
+    assert_eq!(mdbaselabs::ASSET.len(), 860);
     assert_eq!(
         sha2::Sha256::digest(mdbaselabs::ASSET).as_slice(),
         context.sha256
