@@ -36,6 +36,34 @@ pub struct Binding {
     pub read_defaults: Map<String, Value>,
 }
 
+/// The field roles the contract names. A field whose name is a role maps to it
+/// without `tn_role`.
+pub const ROLES: &[&str] = &[
+    "title",
+    "status",
+    "priority",
+    "due",
+    "scheduled",
+    "completedDate",
+    "tags",
+    "contexts",
+    "projects",
+    "attachments",
+    "timeEstimate",
+    "dateCreated",
+    "dateModified",
+    "recurrence",
+    "recurrenceAnchor",
+    "completeInstances",
+    "skippedInstances",
+    "timeEntries",
+];
+
+/// Status names read as closed when a status field declares no completed values.
+const CLOSED_NAMES: &[&str] = &["done", "completed", "cancelled", "canceled"];
+/// Completed values when neither the field declares them nor its names say so.
+const DEFAULT_COMPLETED: &[&str] = &["done", "cancelled"];
+
 impl Binding {
     /// Binds a parsed `task` type definition (the JSON of its frontmatter).
     ///
@@ -149,6 +177,118 @@ impl Binding {
             out.entry(key.clone()).or_insert_with(|| value.clone());
         }
         out
+    }
+
+    /// Binds a collection's own field names to the roles. A field takes its `tn_role`,
+    /// or its name when the name is a role; other fields are not mapped; when two fields
+    /// take one role, the first in name order maps to it. The status
+    /// field gives the statuses and the completed ones: its `tn_completed_values`,
+    /// else the values whose names read as closed, else done and cancelled.
+    pub fn from_roles(fields: &Map<String, Value>) -> Binding {
+        let mut mapped = std::collections::BTreeMap::new();
+        let mut status_def: Option<&Map<String, Value>> = None;
+        for (name, def) in fields {
+            let def = def.as_object();
+            let role = def
+                .and_then(|d| d.get("tn_role"))
+                .and_then(Value::as_str)
+                .or_else(|| ROLES.contains(&name.as_str()).then_some(name.as_str()));
+            let Some(role) = role else { continue };
+            if role == "status" && status_def.is_none() {
+                status_def = def;
+            }
+            // The first field of a role, in name order, is the one it maps to.
+            mapped
+                .entry(role.to_string())
+                .or_insert_with(|| name.clone());
+        }
+        let values = status_def
+            .and_then(|d| d.get("values"))
+            .map(|v| string_list(Some(v)))
+            .unwrap_or_default();
+        let completed = match status_def.and_then(|d| d.get("tn_completed_values")) {
+            Some(explicit) => string_list(Some(explicit)),
+            None => {
+                let inferred: Vec<String> = values
+                    .iter()
+                    .filter(|v| CLOSED_NAMES.contains(&v.as_str()))
+                    .cloned()
+                    .collect();
+                if inferred.is_empty() {
+                    DEFAULT_COMPLETED.iter().map(|s| s.to_string()).collect()
+                } else {
+                    inferred
+                }
+            }
+        };
+        let default_status = values.first().cloned().unwrap_or_default();
+        Binding {
+            type_name: String::new(),
+            fields: mapped,
+            statuses: values,
+            default_status,
+            completed,
+            archived_tag: String::new(),
+            folder: None,
+            path_template: None,
+            read_defaults: Map::new(),
+        }
+    }
+
+    /// The role a collection field plays, when it maps to one.
+    pub fn role_of(&self, field: &str) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|(_, f)| f.as_str() == field)
+            .map(|(role, _)| role.as_str())
+    }
+
+    /// The frontmatter with each mapped field renamed to its role; other keys stay.
+    pub fn normalize(&self, frontmatter: &Map<String, Value>) -> Map<String, Value> {
+        frontmatter
+            .iter()
+            .map(|(key, value)| {
+                let name = self.role_of(key).unwrap_or(key).to_string();
+                (name, value.clone())
+            })
+            .collect()
+    }
+
+    /// The inverse of [`Binding::normalize`]: each role renamed to its field; other keys stay.
+    pub fn denormalize(&self, role_data: &Map<String, Value>) -> Map<String, Value> {
+        role_data
+            .iter()
+            .map(|(key, value)| (self.field(key).to_string(), value.clone()))
+            .collect()
+    }
+
+    /// The title shown for a task: the value of `key` when it is not blank; for a
+    /// title field, the `title` value; else the note's file name without `.md`.
+    /// Blank values count as absent. Values come back as written.
+    pub fn display_title(
+        &self,
+        frontmatter: &Map<String, Value>,
+        key: &str,
+        task_path: Option<&str>,
+    ) -> Option<String> {
+        let text = |k: &str| {
+            frontmatter
+                .get(k)
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+        };
+        text(key)
+            .or_else(|| {
+                (self.role_of(key) == Some("title"))
+                    .then(|| text("title"))
+                    .flatten()
+            })
+            .or_else(|| {
+                let name = task_path?.rsplit('/').next()?;
+                let stem = name.strip_suffix(".md").unwrap_or(name);
+                (!stem.is_empty()).then(|| stem.to_string())
+            })
     }
 
     /// Whether a status closes a task.

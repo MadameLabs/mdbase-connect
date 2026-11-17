@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value, json};
 
 use crate::plan::{list_of, note_name, update};
-use crate::timer::{civil_from_days, days_from_civil, days_in_month};
+use crate::temporal::{self, civil_from_days, days_from_civil};
 use crate::{Binding, TaskError, TaskView, TasksConfig, wikilink};
 
 /// Statuses that keep the project open: they clear outcome, outcome date and resume.
@@ -476,32 +476,12 @@ fn reason_rank(reason: &str) -> usize {
 
 /// Whether `value` is a calendar date `YYYY-MM-DD` that exists.
 pub fn is_valid_date(value: &str) -> bool {
-    parse_date(value).is_some()
-}
-
-fn parse_date(value: &str) -> Option<(i64, i64, i64)> {
-    let b = value.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-        return None;
-    }
-    let digits = |range: std::ops::Range<usize>| -> Option<i64> {
-        let part = &value[range];
-        if part.bytes().all(|c| c.is_ascii_digit()) {
-            part.parse().ok()
-        } else {
-            None
-        }
-    };
-    let year = digits(0..4)?;
-    let month = digits(5..7)?;
-    let day = digits(8..10)?;
-    ((1..=12).contains(&month) && (1..=days_in_month(year, month)).contains(&day))
-        .then_some((year, month, day))
+    temporal::calendar_date(value).is_some()
 }
 
 /// The date `days` before `date`, as `YYYY-MM-DD`.
 fn shift_days(date: &str, days: u32) -> Option<String> {
-    let (y, m, d) = parse_date(date)?;
+    let (y, m, d) = temporal::ymd(date)?;
     let (y, m, d) = civil_from_days(days_from_civil(y, m, d) - i64::from(days));
     Some(format!("{y:04}-{m:02}-{d:02}"))
 }

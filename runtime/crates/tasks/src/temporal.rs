@@ -7,6 +7,8 @@
 //!
 //! Portable: no I/O, no clock.
 
+use crate::TaskError;
+
 /// A calendar date (`YYYY-MM-DD`) as written, after validation.
 pub fn calendar_date(s: &str) -> Option<&str> {
     let b = s.as_bytes();
@@ -29,15 +31,30 @@ pub fn calendar_date(s: &str) -> Option<&str> {
     Some(s)
 }
 
+/// The year, month and day of a calendar date that exists.
+pub(crate) fn ymd(s: &str) -> Option<(i64, i64, i64)> {
+    let date = calendar_date(s)?;
+    Some((
+        num(date[0..4].as_bytes()),
+        num(date[5..7].as_bytes()),
+        num(date[8..10].as_bytes()),
+    ))
+}
+
 /// A datetime with an offset, parsed into its parts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateTime {
-    /// The calendar date and clock time as written.
+    /// Year, as written.
     pub year: i64,
+    /// Month, 1 to 12.
     pub month: i64,
+    /// Day of the month, as written.
     pub day: i64,
+    /// Hour, 0 to 23, as written.
     pub hour: i64,
+    /// Minute, 0 to 59, as written.
     pub minute: i64,
+    /// Second, 0 to 59, as written.
     pub second: i64,
     /// Offset from UTC in minutes (`+05:30` is 330).
     pub offset: i64,
@@ -190,7 +207,7 @@ pub(crate) fn is_leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
-fn days_in_month(y: i64, m: i64) -> i64 {
+pub(crate) fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         2 if is_leap(y) => 29,
         2 => 28,
@@ -222,4 +239,38 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     (y, m, d)
+}
+
+/// Whether a value carries a time: `T` then `HH:MM`, anywhere in it.
+pub fn has_time(value: &str) -> bool {
+    value.as_bytes().windows(6).any(|w| {
+        w[0] == b'T'
+            && w[1].is_ascii_digit()
+            && w[2].is_ascii_digit()
+            && w[3] == b':'
+            && w[4].is_ascii_digit()
+            && w[5].is_ascii_digit()
+    })
+}
+
+/// The date an operation targets: the explicit date when given (it must exist), else
+/// the first existing one of `scheduled` and `due`, else `today`. A value that is not
+/// a date counts as absent, except the explicit one.
+pub fn operation_target(
+    explicit: Option<&str>,
+    scheduled: Option<&str>,
+    due: Option<&str>,
+    today: &str,
+) -> Result<String, TaskError> {
+    if let Some(explicit) = explicit {
+        return written_date(explicit)
+            .map(str::to_string)
+            .ok_or_else(|| TaskError::new("invalid_date", format!("Invalid date: {explicit:?}")));
+    }
+    Ok([scheduled, due]
+        .into_iter()
+        .flatten()
+        .find_map(written_date)
+        .unwrap_or(today)
+        .to_string())
 }

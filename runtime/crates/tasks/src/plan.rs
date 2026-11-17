@@ -160,6 +160,31 @@ pub fn unblock(b: &Binding, t: &TaskView, blockers: &[String]) -> Result<Value, 
     Ok(update(t, fields))
 }
 
+/// Whether a note may be removed. A note with broken backlinks stays unless it is
+/// forced; backlinks are checked only when asked.
+pub fn delete_check(
+    broken_links: &[String],
+    check_backlinks: bool,
+    force: bool,
+) -> Result<(), TaskError> {
+    if check_backlinks && !force && !broken_links.is_empty() {
+        return Err(TaskError::new(
+            "has_backlinks",
+            format!(
+                "the note has backlinks from {}; use force to remove it",
+                broken_links.join(", ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Plans a write of the given fields over an existing task. Each field replaces the
+/// whole value of its key.
+pub fn plan_fields(t: &TaskView, fields: Map<String, Value>) -> Value {
+    update(t, fields)
+}
+
 /// Plans archiving: adds the type's archive tag, keeping the other tags.
 pub fn archive(b: &Binding, t: &TaskView) -> Result<Value, TaskError> {
     if b.archived_tag.is_empty() {
@@ -291,20 +316,7 @@ fn item_name(item: &Value) -> String {
     }
 }
 
-/// A `YYYY-MM-DD` date with a month of 01 to 12 and a day of 01 to 31.
+/// A `YYYY-MM-DD` date that exists on the calendar.
 fn is_date(s: &str) -> bool {
-    let b = s.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-        return false;
-    }
-    if !b
-        .iter()
-        .enumerate()
-        .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
-    {
-        return false;
-    }
-    let month = (b[5] - b'0') * 10 + (b[6] - b'0');
-    let day = (b[8] - b'0') * 10 + (b[9] - b'0');
-    (1..=12).contains(&month) && (1..=31).contains(&day)
+    crate::temporal::calendar_date(s).is_some()
 }

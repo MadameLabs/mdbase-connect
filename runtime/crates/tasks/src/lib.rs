@@ -14,14 +14,15 @@ pub mod conformance;
 mod create;
 mod plan;
 mod projects;
-mod temporal;
+pub mod temporal;
 mod timer;
 
-pub use binding::Binding;
+pub use binding::{Binding, ROLES};
 pub use config::TasksConfig;
 pub use create::{NewTask, create, path_for, promote, resolve_person};
 pub use plan::{
-    TaskView, archive, block, is_open, link_projects, set_status, skip, unblock, unskip, wikilink,
+    TaskView, archive, block, delete_check, is_open, link_projects, plan_fields, set_status, skip,
+    unblock, unskip, wikilink,
 };
 pub use projects::{
     Orphan, ProjectItem, ProjectsSummary, ReviewItem, filter_queue_by_owner, is_project_path,

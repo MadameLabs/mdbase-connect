@@ -1102,17 +1102,13 @@ fn exec_entrada_invalida_da_envelope() {
 }
 
 #[test]
-fn exec_meta_claim_declara_o_perfil_e_as_capacidades() {
+fn exec_meta_claim_declara_o_perfil_e_nenhuma_capacidade() {
     let v = exec_envelope("meta.claim", b"{}");
     assert_eq!(v["ok"], true, "{v}");
     let r = &v["result"];
-    assert_eq!(r["implementation"], "mdbase-tasks (MadameLabs)", "{v}");
+    assert_eq!(r["implementation"], "mdbase-tasks", "{v}");
     assert_eq!(r["profiles"], serde_json::json!(["core-lite"]), "{v}");
-    assert_eq!(
-        r["capabilities"],
-        serde_json::json!(["dependencies", "time-tracking", "archive"]),
-        "{v}"
-    );
+    assert_eq!(r["capabilities"], serde_json::json!([]), "{v}");
     assert_eq!(r["validation_modes"], serde_json::json!(["strict"]), "{v}");
     assert_eq!(r["spec_version"], "0.3.0", "{v}");
     assert!(r["version"].is_string(), "{v}");

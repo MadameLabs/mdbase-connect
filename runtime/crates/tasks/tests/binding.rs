@@ -93,3 +93,124 @@ fn tipo_sem_implements_falha() {
         Ok(_) => panic!("type without an implements key must fail"),
     }
 }
+
+// Roles: a collection's own field names bound to the contract's roles.
+
+fn roles(v: Value) -> Map<String, Value> {
+    v.as_object().expect("object").clone()
+}
+
+#[test]
+fn papel_sem_tn_role_e_o_proprio_nome_do_campo() {
+    let b = mdbn_tasks::Binding::from_roles(&roles(
+        json!({"title": {"type": "string"}, "dateCreated": {"type": "datetime"}}),
+    ));
+    assert_eq!(b.field("title"), "title");
+    assert_eq!(b.field("dateCreated"), "dateCreated");
+    assert_eq!(b.role_of("title"), Some("title"));
+}
+
+#[test]
+fn tn_role_troca_o_campo_e_role_of_volta() {
+    let b = mdbn_tasks::Binding::from_roles(&roles(
+        json!({"myTitle": {"tn_role": "title"}, "myDue": {"tn_role": "due"}}),
+    ));
+    assert_eq!(b.field("title"), "myTitle");
+    assert_eq!(b.field("due"), "myDue");
+    assert_eq!(b.role_of("myDue"), Some("due"));
+    assert_eq!(b.role_of("vendorField"), None);
+}
+
+#[test]
+fn concluidos_vem_de_tn_completed_values_ou_do_nome_ou_do_padrao() {
+    let explicit = mdbn_tasks::Binding::from_roles(&roles(
+        json!({"taskStatus": {"tn_role": "status", "values": ["open", "done", "cancelled"], "tn_completed_values": ["done", "cancelled"]}}),
+    ));
+    assert_eq!(explicit.completed, vec!["done", "cancelled"]);
+    assert!(explicit.is_closed("done"));
+    assert!(!explicit.is_closed("open"));
+
+    let inferred = mdbn_tasks::Binding::from_roles(&roles(
+        json!({"myStatus": {"tn_role": "status", "values": ["open", "in-progress", "completed", "cancelled"]}}),
+    ));
+    assert_eq!(inferred.completed, vec!["completed", "cancelled"]);
+
+    let fallback = mdbn_tasks::Binding::from_roles(&roles(
+        json!({"state": {"tn_role": "status", "values": ["todo", "doing", "backlog"]}}),
+    ));
+    assert_eq!(fallback.completed, vec!["done", "cancelled"]);
+}
+
+#[test]
+fn normalize_e_denormalize_trocam_nome_de_campo_por_papel() {
+    let b = mdbn_tasks::Binding::from_roles(&roles(
+        json!({"myTitle": {"tn_role": "title"}, "myCreated": {"tn_role": "dateCreated"}}),
+    ));
+    let normalized = b.normalize(&roles(
+        json!({"myTitle": "Plan", "myCreated": "2026-02-19T10:00:00Z", "vendorField": "ZX-42"}),
+    ));
+    assert_eq!(normalized["title"], "Plan");
+    assert_eq!(normalized["dateCreated"], "2026-02-19T10:00:00Z");
+    assert_eq!(normalized["vendorField"], "ZX-42", "unmapped keys stay");
+    let back = b.denormalize(&normalized);
+    assert_eq!(back["myTitle"], "Plan");
+    assert_eq!(back["myCreated"], "2026-02-19T10:00:00Z");
+    assert_eq!(back["vendorField"], "ZX-42");
+}
+
+#[test]
+fn titulo_de_exibicao_cai_para_titulo_depois_para_o_nome_do_arquivo() {
+    let second =
+        mdbn_tasks::Binding::from_roles(&roles(json!({"secondaryTitle": {"tn_role": "title"}})));
+    let custom =
+        mdbn_tasks::Binding::from_roles(&roles(json!({"customTitle": {"tn_role": "title"}})));
+    let fm = |v: Value| roles(v);
+    assert_eq!(
+        second
+            .display_title(
+                &fm(json!({"title": "Primary", "secondaryTitle": "Fallback"})),
+                "secondaryTitle",
+                Some("tasks/FromPath.md")
+            )
+            .as_deref(),
+        Some("Fallback")
+    );
+    assert_eq!(
+        custom
+            .display_title(
+                &fm(json!({"title": "Title fallback"})),
+                "customTitle",
+                Some("tasks/FromPath.md")
+            )
+            .as_deref(),
+        Some("Title fallback")
+    );
+    assert_eq!(
+        custom
+            .display_title(&fm(json!({})), "customTitle", Some("tasks/FromPath.md"))
+            .as_deref(),
+        Some("FromPath")
+    );
+    assert_eq!(
+        custom.display_title(&fm(json!({})), "customTitle", Some("")),
+        None
+    );
+    assert_eq!(
+        custom
+            .display_title(
+                &fm(json!({"title": "", "customTitle": ""})),
+                "customTitle",
+                Some("tasks/FallbackOnly.md")
+            )
+            .as_deref(),
+        Some("FallbackOnly")
+    );
+}
+
+#[test]
+fn dois_campos_com_o_mesmo_papel_o_primeiro_vence() {
+    let b = mdbn_tasks::Binding::from_roles(&roles(
+        json!({"zTitle": {"tn_role": "title"}, "aTitle": {"tn_role": "title"}}),
+    ));
+    assert_eq!(b.field("title"), "aTitle");
+}

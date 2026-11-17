@@ -25,26 +25,20 @@ fn code(op: &str, input: Value) -> &'static str {
 // meta
 
 #[test]
-fn meta_has_capability_diz_se_a_capacidade_e_reclamada() {
-    assert_eq!(
-        value("meta.has_capability", json!({"capability": "dependencies"})),
-        json!({"value": true})
-    );
-    assert_eq!(
-        value("meta.has_capability", json!({"capability": "reminders"})),
-        json!({"value": false})
-    );
-    assert_eq!(
-        value(
-            "meta.has_capability",
-            json!({"capability": "time-tracking"})
-        ),
-        json!({"value": true})
-    );
-    assert_eq!(
-        value("meta.has_capability", json!({"capability": "templating"})),
-        json!({"value": false})
-    );
+fn meta_has_capability_nenhuma_capacidade_e_reclamada() {
+    for cap in [
+        "dependencies",
+        "reminders",
+        "time-tracking",
+        "archive",
+        "templating",
+    ] {
+        assert_eq!(
+            value("meta.has_capability", json!({"capability": cap})),
+            json!({"value": false}),
+            "{cap}"
+        );
+    }
 }
 
 #[test]
@@ -356,26 +350,6 @@ fn op_error_shape_devolve_codigo_e_mensagem() {
 }
 
 #[test]
-fn op_atomic_write_so_persiste_quando_nao_falha_depois_da_escrita() {
-    let r = value(
-        "op.atomic_write",
-        json!({"original": {"title": "X", "status": "open"}, "patch": {"status": "done"}, "simulateFailureAfterWrite": true}),
-    );
-    assert_eq!(
-        r,
-        json!({"committed": false, "persisted": {"title": "X", "status": "open"}})
-    );
-    let r = value(
-        "op.atomic_write",
-        json!({"original": {"title": "X", "status": "open"}, "patch": {"status": "done"}, "simulateFailureAfterWrite": false}),
-    );
-    assert_eq!(
-        r,
-        json!({"committed": true, "persisted": {"title": "X", "status": "done"}})
-    );
-}
-
-#[test]
 fn delete_remove_recusa_remover_com_links_quebrados_sem_force() {
     assert_eq!(
         value(
@@ -397,136 +371,6 @@ fn delete_remove_recusa_remover_com_links_quebrados_sem_force() {
             json!({"path": "tasks/demo.md", "checkBacklinks": true, "force": false})
         ),
         json!({"deleted": true})
-    );
-}
-
-// create_compat: a task created from its type's path pattern and fields.
-
-fn task_type(pattern: &str) -> Value {
-    json!({
-        "path_pattern": pattern,
-        "fields": {
-            "title": {"type": "string", "required": true},
-            "status": {"type": "enum", "default": "open"},
-            "priority": {"type": "enum", "default": "normal"},
-            "dateCreated": {"type": "datetime"},
-            "dateModified": {"type": "datetime"},
-            "tags": {"type": "list", "items": {"type": "string"}}
-        }
-    })
-}
-
-fn create(pattern: &str, frontmatter: Value) -> Result<Value, OpError> {
-    run(
-        "create_compat.create",
-        json!({
-            "fixedNow": "2026-02-20T10:20:30.000Z",
-            "taskType": task_type(pattern),
-            "frontmatter": frontmatter,
-        }),
-    )
-}
-
-#[test]
-fn create_compat_preenche_datas_e_defaults_do_tipo() {
-    let r = create("tasks/{title}", json!({"title": "Plan workshop"})).unwrap();
-    assert_eq!(r["path"], "tasks/Plan workshop.md");
-    assert_eq!(r["frontmatter"]["dateCreated"], "2026-02-20T10:20:30.000Z");
-    assert_eq!(r["frontmatter"]["dateModified"], "2026-02-20T10:20:30.000Z");
-    assert_eq!(r["frontmatter"]["status"], "open");
-    assert_eq!(r["frontmatter"]["priority"], "normal");
-}
-
-#[test]
-fn create_compat_expande_os_tokens_de_data_e_de_titulo() {
-    let r = create(
-        "tasks/{year}/{monthNameShort}/{day}/{titleKebab}",
-        json!({"title": "Plan Workshop"}),
-    )
-    .unwrap();
-    assert_eq!(r["path"], "tasks/2026/Feb/20/plan-workshop.md");
-    let r = create(
-        "tasks/{priorityShort}/{statusShort}/{titleSnake}",
-        json!({"title": "A B"}),
-    )
-    .unwrap();
-    assert_eq!(r["path"], "tasks/N/O/a_b.md");
-}
-
-#[test]
-fn create_compat_usa_o_frontmatter_para_os_campos_do_caminho() {
-    let r = create(
-        "tasks/{title}/{dueDate}",
-        json!({"title": "W", "due": "2026-02-20"}),
-    )
-    .unwrap();
-    assert_eq!(r["path"], "tasks/W/2026-02-20.md");
-    let err = create("tasks/{title}/{dueDate}", json!({"title": "W"})).unwrap_err();
-    assert_eq!(err.code, "path_required");
-    let err = create("tasks/{title}/{missingVar}", json!({"title": "W"})).unwrap_err();
-    assert!(err.message.contains("missingVar"), "{}", err.message);
-}
-
-#[test]
-fn create_compat_where_de_igualdade_e_contem_vira_campo() {
-    let mut t = task_type("tasks/{title}");
-    t["fields"]["kind"] = json!({"type": "string"});
-    t["match"] = json!({"where": {"kind": {"eq": "task"}}});
-    let r = run("create_compat.create", json!({"fixedNow": "2026-02-20T10:20:30.000Z", "taskType": t, "frontmatter": {"title": "D"}})).unwrap();
-    assert_eq!(r["frontmatter"]["kind"], "task");
-    let mut t = task_type("tasks/{title}");
-    t["match"] = json!({"where": {"tags": {"contains": "task"}}});
-    let r = run(
-        "create_compat.create",
-        json!({"taskType": t, "frontmatter": {"title": "D"}}),
-    )
-    .unwrap();
-    assert_eq!(r["frontmatter"]["tags"], json!(["task"]));
-}
-
-#[test]
-fn create_compat_erro_forcado_devolve_o_proprio_codigo() {
-    let r = run(
-        "create_compat.create",
-        json!({"taskType": task_type("tasks/{title}"), "frontmatter": {"title": "E"}, "forceCreateError": "already_exists"}),
-    );
-    assert_eq!(r.unwrap_err().message, "already_exists");
-}
-
-#[test]
-fn op_mutate_with_validation_aceita_o_valido_e_recusa_tipo_errado() {
-    let ok = value(
-        "op.mutate_with_validation",
-        json!({"strict": true, "frontmatter": {"title": "Valid task", "status": "open", "dateCreated": "2026-02-20T10:00:00Z", "dateModified": "2026-02-20T10:00:00Z"}}),
-    );
-    assert_eq!(ok, json!({"value": "accepted"}));
-    assert_eq!(
-        code(
-            "op.mutate_with_validation",
-            json!({"strict": true, "frontmatter": {"title": "X", "status": 3}})
-        ),
-        "invalid_type"
-    );
-    assert_eq!(
-        code(
-            "op.mutate_with_validation",
-            json!({"strict": false, "frontmatter": {"title": "X", "status": 3}})
-        ),
-        "invalid_type"
-    );
-    assert_eq!(
-        code(
-            "op.mutate_with_validation",
-            json!({"strict": true, "frontmatter": {"status": "open"}})
-        ),
-        "missing_required_field"
-    );
-    assert_eq!(
-        code(
-            "op.mutate_with_validation",
-            json!({"strict": true, "frontmatter": {"title": "X", "dateCreated": "ontem"}})
-        ),
-        "invalid_date"
     );
 }
 
@@ -554,21 +398,57 @@ fn op_idempotency_check_repetir_complete_nao_muda_o_estado() {
 }
 
 #[test]
-fn op_mutate_with_validation_a_mensagem_traz_o_codigo() {
-    let e = run(
-        "op.mutate_with_validation",
-        json!({"strict": true, "frontmatter": {"title": "X", "status": 3}}),
-    )
-    .unwrap_err();
-    assert!(e.message.contains("invalid_type"), "{}", e.message);
-    let e = run(
-        "op.mutate_with_validation",
-        json!({"strict": true, "frontmatter": {"status": "open"}}),
-    )
-    .unwrap_err();
-    assert!(
-        e.message.contains("missing_required_field"),
-        "{}",
-        e.message
+fn claim_usa_o_nome_mdbase_tasks_e_nao_reclama_capacidades() {
+    let c = value("meta.claim", json!({}));
+    assert_eq!(c["implementation"], "mdbase-tasks");
+    assert_eq!(c["capabilities"], json!([]));
+    assert_eq!(
+        value("meta.has_capability", json!({"capability": "dependencies"})),
+        json!({"value": false})
     );
+}
+
+#[test]
+fn operacao_fora_do_contrato_responde_sem_nome_da_operacao() {
+    let e = run(
+        "date.day_in_timezone",
+        json!({"instant": "2026-02-20T00:30:00Z", "timezone": "Invalid/Zone"}),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "unsupported_operation");
+    assert_eq!(e.message, "operation not implemented");
+}
+
+#[test]
+fn delete_remove_recusa_brokenlinks_que_nao_e_lista() {
+    assert_eq!(
+        code(
+            "delete.remove",
+            json!({"path": "t.md", "checkBacklinks": true, "force": false, "brokenLinks": "x"})
+        ),
+        "invalid_input"
+    );
+}
+
+#[test]
+fn op_idempotency_check_create_e_idempotente() {
+    let r = value(
+        "op.idempotency_check",
+        json!({"operation": "create", "first": null, "second": {"title": "New task", "status": "open"}}),
+    );
+    assert_eq!(r, json!({"idempotent": true}));
+}
+
+#[test]
+fn operacoes_sem_correspondente_no_crate_respondem_nao_implementada() {
+    for op in [
+        "create_compat.create",
+        "op.mutate_with_validation",
+        "op.atomic_write",
+        "date.day_in_timezone",
+    ] {
+        let e = run(op, json!({"value": "x"})).unwrap_err();
+        assert_eq!(e.code, "unsupported_operation", "{op}");
+        assert_eq!(e.message, "operation not implemented", "{op}");
+    }
 }

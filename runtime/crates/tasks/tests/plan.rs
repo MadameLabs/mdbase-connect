@@ -288,3 +288,34 @@ fn todo_writeop_traz_if_revision() {
         assert_eq!(op["path"], json!("06-tarefas/A.md"));
     }
 }
+
+#[test]
+fn data_de_conclusao_inexistente_recusa() {
+    let b = binding();
+    let t = tarefa("06-tarefas/A.md", json!({"status": "em-andamento"}));
+    for inexistente in ["2026-02-30", "2025-02-29", "2026-04-31", "2026-13-01"] {
+        let err = set_status(&b, &t, "concluido", Some(inexistente), HOJE).unwrap_err();
+        assert_eq!(err.code, "invalid_completed_date", "{inexistente}");
+    }
+    let ok = set_status(&b, &t, "concluido", Some("2024-02-29"), HOJE);
+    assert!(ok.is_ok(), "2024 is a leap year");
+}
+
+#[test]
+fn apagar_nota_com_backlink_quebrado_recusa_sem_force() {
+    use mdbn_tasks::delete_check;
+    let quebrados = vec!["tasks/other.md".to_string()];
+    assert_eq!(
+        delete_check(&quebrados, true, false).unwrap_err().code,
+        "has_backlinks"
+    );
+    assert!(
+        delete_check(&quebrados, true, true).is_ok(),
+        "force removes it"
+    );
+    assert!(delete_check(&[], true, false).is_ok(), "no broken links");
+    assert!(
+        delete_check(&quebrados, false, false).is_ok(),
+        "backlinks not checked"
+    );
+}
