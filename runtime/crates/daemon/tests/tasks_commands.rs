@@ -1123,3 +1123,43 @@ fn exec_fica_fora_da_ajuda() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(!text.contains("exec"), "{text}");
 }
+
+/// A collection whose records keep their type under `type` and `types`, as the
+/// BIBLIOTECA does, with the `plano` type declared.
+fn fixture_tipado(tag: &str) -> Fixture {
+    let f = fixture(tag, None);
+    std::fs::write(
+        f.root.join("mdbase.yaml"),
+        "spec_version: \"0.3.0\"\nname: Test\nsettings:\n  explicit_type_keys: [type, types]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f.root.join("_types/plano.md"),
+        "---\nkind: mdbase.type\nname: plano\nmatch:\n  path_glob: \"01-planejamento/**/*.md\"\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
+    )
+    .unwrap();
+    f
+}
+
+#[test]
+fn promote_documento_tipado_aparece_no_list() {
+    let f = fixture_tipado("tpt");
+    std::fs::create_dir_all(f.root.join("01-planejamento")).unwrap();
+    std::fs::write(
+        f.root.join("01-planejamento/Ideia.md"),
+        "---\ntype: plano\ntags: [ideia]\ntitle: \"Ideia\"\ndateCreated: \"2026-11-01T09:00:00.000-03:00\"\n---\nCorpo.\n",
+    )
+    .unwrap();
+    let (code, v) = f.json(&["tasks", "promote", "01-planejamento/Ideia.md"]);
+    assert_eq!(code, 0, "{v}");
+    let (code, v) = f.json(&["tasks", "list"]);
+    assert_eq!(code, 0, "{v}");
+    let paths: Vec<&str> = v["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["path"].as_str())
+        .collect();
+    assert!(paths.contains(&"01-planejamento/Ideia.md"), "{v}");
+    assert!(f.read("01-planejamento/Ideia.md").contains("type: plano"));
+}

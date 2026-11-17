@@ -246,3 +246,62 @@ fn promover_recusa_responsavel_antigo() {
     let err = promote(&b, &c, &nota(json!({})), &n).expect_err("refused");
     assert_eq!(err.code, "responsavel_antigo");
 }
+
+#[test]
+fn promover_documento_tipado_acrescenta_task_em_types() {
+    let b = binding();
+    let t = nota(json!({"type": "plano", "tags": ["ideia"]}));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("promotes");
+    assert_eq!(campos(&op).get("types"), Some(&json!(["plano", "task"])));
+    assert_eq!(campos(&op).get("tags"), Some(&json!(["ideia", "task"])));
+}
+
+#[test]
+fn promover_mantem_o_campo_type() {
+    let b = binding();
+    let t = nota(json!({"type": "plano", "tags": ["ideia"]}));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("promotes");
+    assert!(!campos(&op).contains_key("type"), "{:?}", campos(&op));
+}
+
+#[test]
+fn promover_types_existente_acrescenta_task() {
+    let b = binding();
+    let t = nota(json!({"types": ["plano", "briefing"], "tags": ["ideia"]}));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("promotes");
+    assert_eq!(
+        campos(&op).get("types"),
+        Some(&json!(["plano", "briefing", "task"]))
+    );
+
+    let ja = nota(json!({"types": ["plano", "task"], "tags": ["task"]}));
+    let op = promote(&b, &TasksConfig::default(), &ja, &nova("Ideia")).expect("promotes");
+    assert!(!campos(&op).contains_key("types"), "{:?}", campos(&op));
+}
+
+#[test]
+fn promover_sem_tipo_ou_com_type_task_nao_grava_types() {
+    let b = binding();
+    for frontmatter in [
+        json!({"tags": ["ideia"]}),
+        json!({"type": "task", "tags": []}),
+    ] {
+        let op = promote(
+            &b,
+            &TasksConfig::default(),
+            &nota(frontmatter),
+            &nova("Ideia"),
+        )
+        .expect("promotes");
+        assert!(!campos(&op).contains_key("types"), "{:?}", campos(&op));
+    }
+}
+
+#[test]
+fn reparo_de_tarefa_ja_promovida_mantem_status() {
+    let b = binding();
+    let t = nota(json!({"tags": ["task"], "status": "em-andamento"}));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("repairs");
+    assert!(!campos(&op).contains_key("status"), "{:?}", campos(&op));
+    assert_eq!(campos(&op).get("tags"), Some(&json!(["task"])));
+}

@@ -16,6 +16,10 @@ use crate::{Binding, TaskError, TaskView, TasksConfig, wikilink};
 
 /// Tag that makes a note a task; the type's `where` rule matches on it.
 const TASK_TAG: &str = "task";
+/// Frontmatter key of the scalar type of a note.
+const TYPE_KEY: &str = "type";
+/// Frontmatter key of the list of types of a note.
+const TYPES_KEY: &str = "types";
 /// Placeholder in the type's filename template.
 const TITLE_PLACEHOLDER: &str = "{{title}}";
 /// Characters the TaskNotes filename sanitizer removes (not replaces).
@@ -75,7 +79,13 @@ pub fn create(b: &Binding, c: &TasksConfig, n: &NewTask) -> Result<Value, TaskEr
 /// Plans an `update` write that promotes an existing note to a task. The `task`
 /// tag is added to the note's tags, the initial status is set, and assignees,
 /// brand and projects are added to the note's own lists without duplicates. The
-/// write carries the note's revision. The title is not changed.
+/// note's explicit type list (`types`, or the scalar `type`) gets the task type
+/// added, so the collection's type rules see the note as a task too; `type` itself
+/// is never rewritten. The write carries the note's revision. The title is not
+/// changed.
+///
+/// A note that already carries the `task` tag is repaired, not restarted: its
+/// status is kept as written and only what is missing is filled in.
 pub fn promote(
     b: &Binding,
     c: &TasksConfig,
@@ -83,7 +93,9 @@ pub fn promote(
     n: &NewTask,
 ) -> Result<Value, TaskError> {
     let mut fields = Map::new();
-    fields.insert(b.field("status").to_string(), json!(initial_status(b, c)?));
+    if !has_task_tag(b, note) {
+        fields.insert(b.field("status").to_string(), json!(initial_status(b, c)?));
+    }
     fields.insert(
         b.field("tags").to_string(),
         Value::Array(merge(
@@ -91,6 +103,9 @@ pub fn promote(
             &[TASK_TAG.to_string()],
         )),
     );
+    if let Some(types) = types_with_task(b, note) {
+        fields.insert(TYPES_KEY.to_string(), Value::Array(types));
+    }
     merge_into(
         &mut fields,
         note,
@@ -102,6 +117,33 @@ pub fn promote(
 
     require(c, &fields, &note.frontmatter)?;
     Ok(update(note, fields))
+}
+
+fn has_task_tag(b: &Binding, note: &TaskView) -> bool {
+    list_of(note, b.field("tags"))
+        .iter()
+        .any(|v| v.as_str() == Some(TASK_TAG))
+}
+
+/// The note's explicit types with the task type added, or `None` when there is
+/// nothing to add. The list is `types` when the note has one; otherwise the scalar
+/// `type`. A note with no types, or already typed as a task, gets no change.
+fn types_with_task(b: &Binding, note: &TaskView) -> Option<Vec<Value>> {
+    let task = b.type_name.as_str();
+    let mut base = list_of(note, TYPES_KEY);
+    if base.is_empty() {
+        let scalar = note
+            .frontmatter
+            .get(TYPE_KEY)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        base = scalar.map(|s| json!(s)).into_iter().collect();
+    }
+    if base.is_empty() || base.iter().any(|v| v.as_str() == Some(task)) {
+        return None;
+    }
+    Some(merge(base, &[task.to_string()]))
 }
 
 /// The people a name or alias stands for, as wikilinks.
