@@ -370,8 +370,8 @@ fn only_hermetic_tests_reach_a_loopback_control_plane() {
     }
 }
 
-/// Our `mdbaselabs` build embeds the test asset of `config/next-trust`, pinned by
-/// digest (Trocado pelo asset real na Task 3 do plano pilha-next-no-labs).
+/// Our `mdbaselabs` build embeds the Labs asset of `config/next-trust`, pinned by
+/// digest.
 #[cfg(feature = "mdbaselabs")]
 #[test]
 fn mdbaselabs_embeds_exactly_the_test_asset() {
@@ -383,7 +383,7 @@ fn mdbaselabs_embeds_exactly_the_test_asset() {
         "https://next.madamelabs.com.br"
     );
     let context = mdbaselabs::context().unwrap();
-    assert_eq!(mdbaselabs::ASSET.len(), 863);
+    assert_eq!(mdbaselabs::ASSET.len(), 847);
     assert_eq!(
         sha2::Sha256::digest(mdbaselabs::ASSET).as_slice(),
         context.sha256
@@ -414,7 +414,7 @@ fn mdbaselabs_embeds_exactly_the_test_asset() {
 #[test]
 fn mdbaselabs_refuses_any_other_asset_bytes_or_context() {
     use super::mdbaselabs;
-    let now = 1_789_000_000_000 + 1;
+    let now = 1_794_932_005_644 + 1; // the asset's issued_at, plus one millisecond
     let context = mdbaselabs::context().unwrap();
     assert!(mdbn_trust::verify(mdbaselabs::ASSET, &context, now).is_ok());
     let mut changed = mdbaselabs::ASSET.to_vec();

@@ -1,65 +1,29 @@
 //! Our `mdbaselabs` environment (the NEXT stack on Labs) in the shared verifier.
 //!
-//! The asset under `config/next-trust/mdbaselabs.json` is a TEST asset: its root
-//! and policy key come from the fixed throwaway seeds below, so nothing here is
-//! operational. Trocado pelo asset real na Task 3 do plano pilha-next-no-labs.
+//! `config/next-trust/mdbaselabs.json` is the REAL asset, signed by the Labs root
+//! whose private key stays outside the repository. These tests never regenerate it
+//! and hold no key material: they verify the checked-in bytes under the context the
+//! daemon pins, and refuse every crossed context.
 
 use super::*;
-use mdbn_replica::crypto::sign::DeviceSigner;
 use sha2::Digest;
 
-// Trocado pelo asset real na Task 3 do plano pilha-next-no-labs.
 const ASSET: &[u8] = include_bytes!("../../../../config/next-trust/mdbaselabs.json");
-const ROOT_SEED: [u8; 32] = [0x7a; 32];
-const POLICY_SEED: [u8; 32] = [0x7b; 32];
 const CONTROL_PLANE: &str = "https://next.madamelabs.com.br";
 const LOG: &str = "https://next-log.madamelabs.com.br";
-const COMMIT: &str = "b29ef6f5ea6c35c96037c6ca8bf9cbe0a969be3f";
-const VERSION: &str = "0.0.0-mdbaselabs-test";
-const ISSUED: u64 = 1_789_000_000_000;
-const NOT_BEFORE: u64 = 1_780_000_000_000;
-const NOT_AFTER: u64 = 1_900_000_000_000;
+const COMMIT: &str = "dd8ca8e3c3677e805ca88d37bf869a84dfc8ac06";
+const VERSION: &str = "0.0.0";
+const SHA256: &str = "54fd2d130871b0e401881eaea52eb20024d391ebe228dcf93d75dcbf51c3f696";
 
-fn root() -> DeviceSigner {
-    DeviceSigner::from_seed(&ROOT_SEED)
-}
-
-/// The canonical payload, signed by the throwaway root. The output is the asset
-/// file byte for byte (see `write_test_asset_file`).
-fn generated_asset() -> Vec<u8> {
-    let root = root();
-    let policy = DeviceSigner::from_seed(&POLICY_SEED);
-    let root_id = key_id(&root.public());
-    let cert = CpCert {
-        policy_pk: B32(policy.public()),
-        not_before: NOT_BEFORE as i64,
-        not_after: NOT_AFTER as i64,
-        root: root_id,
-        sig: B64([0; 64]),
-    };
-    let signature = root.sign_digest(&cert.signed_digest().unwrap().0);
-    serde_json::to_vec(&serde_json::json!({
-        "schema_version": 1,
-        "environment": "mdbaselabs",
-        "control_plane_origin": CONTROL_PLANE,
-        "log_origin": LOG,
-        "issued_at": ISSUED,
-        "source": { "repository": REPOSITORY, "commit": COMMIT, "version": VERSION },
-        "roots": [{ "key_id": hex(&root_id.0), "public_key": hex(&root.public()) }],
-        "policy_keys": [{ "key_id": hex(&key_id(&policy.public()).0), "certificate": {
-            "policy_public_key": hex(&policy.public()),
-            "not_before": NOT_BEFORE,
-            "not_after": NOT_AFTER,
-            "root_key_id": hex(&root_id.0),
-            "signature": hex(&signature),
-        } }]
-    }))
-    .unwrap()
+/// The issue time recorded in the asset itself (a verify at this instant succeeds).
+fn issued() -> u64 {
+    let value: serde_json::Value = serde_json::from_slice(ASSET).unwrap();
+    value["issued_at"].as_u64().unwrap()
 }
 
 fn context() -> Context {
     Context {
-        sha256: sha2::Sha256::digest(ASSET).into(),
+        sha256: hex_exact(SHA256, "asset digest").unwrap(),
         environment: "mdbaselabs".into(),
         control_plane_origin: CONTROL_PLANE.into(),
         log_origin: LOG.into(),
@@ -71,33 +35,33 @@ fn context() -> Context {
     }
 }
 
-/// Regenerates `config/next-trust/mdbaselabs.json`. Run deliberately:
-/// `cargo test -p mdbn-trust mdbaselabs -- --ignored write_test_asset_file`.
 #[test]
-#[ignore = "writes config/next-trust/mdbaselabs.json"]
-fn write_test_asset_file() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../config/next-trust/mdbaselabs.json"
+fn checked_in_asset_is_the_pinned_bytes_and_fields() {
+    assert_eq!(ASSET.len(), 847);
+    assert_eq!(
+        sha2::Sha256::digest(ASSET).as_slice(),
+        context().sha256,
+        "digest pin"
     );
-    std::fs::write(path, generated_asset()).unwrap();
-}
-
-#[test]
-fn checked_in_asset_is_the_generated_test_asset() {
-    assert_eq!(ASSET, generated_asset().as_slice());
+    let value: serde_json::Value = serde_json::from_slice(ASSET).unwrap();
+    assert_eq!(value["environment"], "mdbaselabs");
+    assert_eq!(value["control_plane_origin"], CONTROL_PLANE);
+    assert_eq!(value["log_origin"], LOG);
+    assert_eq!(value["source"]["repository"], REPOSITORY);
+    assert_eq!(value["source"]["commit"], COMMIT);
+    assert_eq!(value["source"]["version"], VERSION);
 }
 
 #[test]
 fn mdbaselabs_asset_verifies_only_under_its_own_context() {
-    let trust = verify(ASSET, &context(), ISSUED).unwrap();
+    let trust = verify(ASSET, &context(), issued()).unwrap();
     assert_eq!(trust.environment, "mdbaselabs");
     assert_eq!(trust.cp_origin, CONTROL_PLANE);
     assert_eq!(trust.log_origin, LOG);
-    assert_eq!(trust.roots, [root().public()]);
+    assert_eq!(trust.roots.len(), 1);
     assert_eq!(trust.policy_pins.validate(), Ok(()));
     assert!(
-        verify(ASSET, &context(), ISSUED - 1).is_err(),
+        verify(ASSET, &context(), issued() - 1).is_err(),
         "issued in the future"
     );
 }
@@ -172,11 +136,11 @@ fn mdbaselabs_refuses_any_other_environment_origin_or_source() {
         },
     ];
     for edit in edits {
-        assert!(verify(ASSET, &edit, ISSUED).is_err(), "{edit:?}");
+        assert!(verify(ASSET, &edit, issued()).is_err(), "{edit:?}");
     }
     let mut wrong_digest = context();
     wrong_digest.sha256[0] ^= 1;
-    assert!(verify(ASSET, &wrong_digest, ISSUED).is_err(), "digest");
+    assert!(verify(ASSET, &wrong_digest, issued()).is_err(), "digest");
 }
 
 #[test]
@@ -191,8 +155,8 @@ fn mdbaselabs_refuses_other_environments_assets_under_its_context() {
             sha256: sha2::Sha256::digest(&other).into(),
             ..context()
         };
-        assert!(verify(&other, &expected, ISSUED).is_err(), "{name}");
-        assert!(verify(&other, &context(), ISSUED).is_err(), "{name}");
+        assert!(verify(&other, &expected, issued()).is_err(), "{name}");
+        assert!(verify(&other, &context(), issued()).is_err(), "{name}");
     }
 }
 
@@ -201,12 +165,12 @@ fn mdbaselabs_refuses_changed_asset_bytes() {
     let mut changed = ASSET.to_vec();
     let at = changed.iter().position(|b| *b == b'7').unwrap();
     changed[at] = b'8';
-    assert!(verify(&changed, &context(), ISSUED).is_err());
+    assert!(verify(&changed, &context(), issued()).is_err());
 }
 
 #[test]
 fn mdbaselabs_history_is_append_only_and_never_mixes_environments() {
-    let current = verify(ASSET, &context(), ISSUED).unwrap();
+    let current = verify(ASSET, &context(), issued()).unwrap();
     assert_eq!(
         require_append_only(&current, std::slice::from_ref(&current)),
         Ok(())
