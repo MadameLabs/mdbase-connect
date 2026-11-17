@@ -5,9 +5,12 @@
 set -euo pipefail
 ARQ=/etc/nftables/laboratorio-rede.nft
 FAIXA=172.31.249.0/24
+ISOLADA="python3 $(dirname "$(readlink -f "$0")")/isolada.py"   # confere por cobertura: o nft funde faixas vizinhas ao listar
 [ "$(id -u)" = 0 ] || { echo "precisa de root" >&2; exit 1; }
-if nft list table ip laboratorio 2>/dev/null | grep -qF "$FAIXA"; then echo "ja isolada: nada a fazer"; exit 0; fi
+if nft list table ip laboratorio 2>/dev/null | $ISOLADA "$FAIXA" 2>/dev/null; then echo "ja isolada: nada a fazer"; exit 0; fi
 grep -q '^define ISOLADAS = {' "$ARQ" || { echo "define ISOLADAS nao encontrado em $ARQ" >&2; exit 1; }
+ANTIGAS=$(sed -n 's|^define ISOLADAS = { \(.*\) }$|\1|p' "$ARQ" | tr -d ',')
+[ -n "$ANTIGAS" ] || { echo "faixas atuais de ISOLADAS nao lidas" >&2; exit 1; }
 BAK="$ARQ.antes-mdbase-next.$(date +%Y%m%d-%H%M%S)"
 cp -p "$ARQ" "$BAK"
 TMP=$(mktemp)
@@ -21,6 +24,6 @@ if ! grep -qF "$FAIXA" "$ARQ"; then
 fi
 systemctl restart laboratorio-rede.service
 systemctl is-active --quiet laboratorio-rede.service
-nft list table ip laboratorio | grep -qF "$FAIXA"
-nft list table ip laboratorio | grep -qF 172.31.255.0/24   # as redes antigas continuam
+# shellcheck disable=SC2086  # ANTIGAS é uma lista de faixas, uma por palavra
+nft list table ip laboratorio | $ISOLADA "$FAIXA" $ANTIGAS   # a nova e as antigas, todas isoladas
 echo "ok: $FAIXA isolada; backup em $BAK"

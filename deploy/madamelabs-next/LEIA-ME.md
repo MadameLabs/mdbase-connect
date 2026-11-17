@@ -11,6 +11,8 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `desfazer.sh` | derruba a pilha e tira só as duas regras de túnel |
 | `backup.sh` | `pg_dump` dos dois bancos, contagem exata por tabela, cifrado com gpg, enviado ao R2 |
 | `mdbase-next-backup.service` e `.timer` | backup diário às 22:50 (horário local) |
+| `liberar-rede.sh` | ficha 2: põe `172.31.249.0/24` no `ISOLADAS` e recarrega, com volta automática |
+| `isolada.py` | confere pela tabela carregada que uma faixa está isolada (por cobertura) |
 | `SHA256SUMS` | hashes dos arquivos acima |
 
 ## Verificação do pacote (antes de rodar qualquer coisa)
@@ -57,7 +59,7 @@ sudo cp -p /etc/nftables/laboratorio-rede.nft /etc/nftables/laboratorio-rede.nft
 sudoedit /etc/nftables/laboratorio-rede.nft     # incluir 172.31.249.0/24 em ISOLADAS, no mesmo formato das outras
 sudo nft -c -f /etc/nftables/laboratorio-rede.nft   # só checa a sintaxe
 sudo systemctl restart laboratorio-rede.service
-sudo nft list table ip laboratorio | grep -F 172.31.249.0/24   # ISOLADAS é um define: a faixa aparece expandida nas regras
+sudo nft list table ip laboratorio | python3 isolada.py 172.31.249.0/24 && echo isolada   # o nft funde faixas vizinhas ao listar: conferir por cobertura
 ```
 
 Antes do restart, confirmar com `sudo head -20 /etc/nftables/laboratorio-rede.nft` que o arquivo limpa a tabela antes de recarregar (senão o restart soma regras). Não usar `firewall-cmd --direct`.

@@ -94,7 +94,7 @@ trap limpar EXIT
 
 # ---------------------------------------------------------------- 0. pré-checagens (nada é alterado aqui)
 [[ $EUID -eq 0 ]] || falha "rode como root (sudo bash instalar.sh)"
-for c in docker openssl sha256sum gunzip curl cloudflared systemctl awk nft df; do
+for c in docker openssl sha256sum gunzip curl cloudflared systemctl awk nft df python3; do
   command -v "$c" >/dev/null || falha "comando ausente: $c"
 done
 for arq in compose.yml backup.sh desfazer.sh mdbase-next-backup.service mdbase-next-backup.timer; do
@@ -119,8 +119,9 @@ fi
 
 # Sub-rede no isolamento: conferida nas regras CARREGADAS, não no arquivo.
 # ISOLADAS é um `define` do laboratorio-rede.nft (não um set nomeado), então o
-# nft já expande a faixa dentro das regras: basta procurá-la na tabela ativa.
-nft list table $NFT_TABELA 2>/dev/null | grep -qF '172.31.249.0/24' \
+# nft expande a faixa dentro das regras e, ao listar, funde faixas vizinhas:
+# isolada.py confere por cobertura, não por texto.
+nft list table $NFT_TABELA 2>/dev/null | python3 "$(dirname "$(readlink -f "$0")")/isolada.py" "$SUB_REDE" \
   || falha "172.31.249.0/24 não está nas regras carregadas de $NFT_TABELA. Ficha de isolamento antes (LEIA-ME.md, passo 2)"
 
 if ! docker network inspect "${PROJETO}_next" >/dev/null 2>&1; then
