@@ -308,7 +308,8 @@ pub(super) enum AccountCmd {
     SignIn {
         /// Server: only this build's environment (production builds:
         /// https://connect.mdbase.dev; staging builds:
-        /// https://connect-staging.mdbase.dev; LAB builds:
+        /// https://connect-staging.mdbase.dev; mdbaselabs builds:
+        /// https://next.madamelabs.com.br; LAB builds:
         /// https://connect-lab.mdbase.dev), which is also the default.
         #[arg(long)]
         server: Option<String>,

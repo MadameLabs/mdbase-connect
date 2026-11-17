@@ -3,12 +3,13 @@
 //!
 //! A build belongs to exactly one environment, fixed at compile time: the default
 //! build is **production**; the `staging` cargo feature makes a **staging** build;
-//! the `lab` cargo feature makes a **LAB** build and requires both authenticated
-//! LAB release files at compile time. The distinct `local-rehearsal` feature
-//! embeds signed PUBLIC per-stack local trust inputs, verified against an
-//! independently supplied stack root. LAB, staging and local-rehearsal exclude one
-//! another; no managed profile compiles or reads the local inputs. A public tree
-//! without the LAB files can build and test the production and staging profiles;
+//! the `mdbaselabs` cargo feature makes an **mdbaselabs** build (our NEXT stack on
+//! Labs, see `trust/mdbaselabs.rs`); the `lab` cargo feature makes a **LAB** build
+//! and requires both authenticated LAB release files at compile time. The distinct
+//! `local-rehearsal` feature embeds signed PUBLIC per-stack local trust inputs,
+//! verified against an independently supplied stack root. LAB, staging, mdbaselabs
+//! and local-rehearsal exclude one another; no managed profile compiles or reads
+//! the local inputs. A public tree without the LAB files can build and test the production and staging profiles;
 //! it cannot build LAB or supply replacement trust at runtime. The environment decides
 //! the default control plane for `mdbase account sign-in`, the
 //! only control plane sign-in accepts, and the trust pins synced collections use.
@@ -20,7 +21,8 @@
 //! independently authenticated context (from the authenticated release manifest,
 //! never from the payload; see `trust/lab-authentication.md`). The production
 //! and staging builds embed the reviewed in-repo assets
-//! `config/next-trust/production.json` and `config/next-trust/staging.json`, each
+//! `config/next-trust/production.json` and `config/next-trust/staging.json`, and
+//! mdbaselabs builds `config/next-trust/mdbaselabs.json`, each
 //! pinned here by digest together with the context its authenticated release
 //! bundle binds (environment, origins, release source). Each is compiled only into
 //! its own environment's build.
@@ -31,9 +33,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(
     all(feature = "lab", feature = "staging"),
     all(feature = "lab", feature = "local-rehearsal"),
+    all(feature = "lab", feature = "mdbaselabs"),
     all(feature = "staging", feature = "local-rehearsal"),
+    all(feature = "staging", feature = "mdbaselabs"),
+    all(feature = "mdbaselabs", feature = "local-rehearsal"),
 ))]
-compile_error!("LAB, staging and local-rehearsal are distinct artifacts; choose exactly one");
+compile_error!(
+    "LAB, staging, mdbaselabs and local-rehearsal are distinct artifacts; choose exactly one"
+);
 
 use mdbn_trust::{Context, REPOSITORY, Source};
 
@@ -45,6 +52,8 @@ mod local_input {
 }
 #[cfg(feature = "local-rehearsal")]
 const LOCAL_ASSET: &[u8] = include_bytes!("../trust/local.json");
+#[cfg(feature = "mdbaselabs")]
+mod mdbaselabs;
 pub use mdbn_trust::{Invalid, Trust, origin};
 
 /// A Connect environment a build can belong to.
@@ -56,6 +65,8 @@ pub enum Environment {
     Lab,
     /// The isolated staging service (`staging` feature builds only).
     Staging,
+    /// Our NEXT stack on Labs (`mdbaselabs` feature builds only).
+    MdbaseLabs,
     /// Per-stack local service (explicit local-rehearsal artifact only).
     #[cfg(feature = "local-rehearsal")]
     Local,
@@ -71,6 +82,8 @@ impl Environment {
             Environment::Lab
         } else if cfg!(feature = "staging") {
             Environment::Staging
+        } else if cfg!(feature = "mdbaselabs") {
+            Environment::MdbaseLabs
         } else {
             Environment::Production
         }
@@ -82,6 +95,7 @@ impl Environment {
             Environment::Production => "production",
             Environment::Lab => "lab",
             Environment::Staging => "staging",
+            Environment::MdbaseLabs => "mdbaselabs",
             #[cfg(feature = "local-rehearsal")]
             Environment::Local => "local",
         }
@@ -93,6 +107,7 @@ impl Environment {
             Environment::Production => "https://connect.mdbase.dev",
             Environment::Lab => "https://connect-lab.mdbase.dev",
             Environment::Staging => "https://connect-staging.mdbase.dev",
+            Environment::MdbaseLabs => "https://next.madamelabs.com.br",
             #[cfg(feature = "local-rehearsal")]
             Environment::Local => local_input::CP_ORIGIN,
         }
@@ -141,11 +156,19 @@ impl Environment {
             Environment::Staging => Err(Invalid(
                 "this is not a staging build; staging requires --features staging".into(),
             )),
-            #[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal")))]
+            #[cfg(feature = "mdbaselabs")]
+            Environment::MdbaseLabs => {
+                mdbn_trust::verify(mdbaselabs::ASSET, &mdbaselabs::context()?, now_ms)
+            }
+            #[cfg(not(feature = "mdbaselabs"))]
+            Environment::MdbaseLabs => Err(Invalid(
+                "this is not an mdbaselabs build; mdbaselabs requires --features mdbaselabs".into(),
+            )),
+            #[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal", feature = "mdbaselabs")))]
             Environment::Production => {
                 mdbn_trust::verify(PRODUCTION_ASSET, &production_context()?, now_ms)
             }
-            #[cfg(any(feature = "lab", feature = "staging", feature = "local-rehearsal"))]
+            #[cfg(any(feature = "lab", feature = "staging", feature = "local-rehearsal", feature = "mdbaselabs"))]
             Environment::Production => Err(Invalid(
                 "this is not a production build; it embeds no production trust asset".into(),
             )),
@@ -168,13 +191,23 @@ pub fn authenticated() -> Result<Trust, Invalid> {
 
 /// The production asset: the reviewed, in-repo release input, byte for byte.
 /// [`production_context`] pins its digest; any other bytes refuse to verify.
-#[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal")))]
+#[cfg(not(any(
+    feature = "lab",
+    feature = "staging",
+    feature = "local-rehearsal",
+    feature = "mdbaselabs"
+)))]
 const PRODUCTION_ASSET: &[u8] = include_bytes!("../../../../config/next-trust/production.json");
 
 /// The production asset's authenticated context, as the signed release trust
 /// bundle for it binds (docs/next-trust-release.md), never read from the payload.
 /// A trust rotation replaces the asset and these values in one reviewed change.
-#[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal")))]
+#[cfg(not(any(
+    feature = "lab",
+    feature = "staging",
+    feature = "local-rehearsal",
+    feature = "mdbaselabs"
+)))]
 fn production_context() -> Result<Context, Invalid> {
     Ok(Context {
         sha256: mdbn_trust::hex_exact(PRODUCTION_ASSET_SHA256, "asset digest")?,
@@ -190,7 +223,12 @@ fn production_context() -> Result<Context, Invalid> {
 }
 
 /// SHA-256 of [`PRODUCTION_ASSET`] (beta.141 production trust, 840 bytes).
-#[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal")))]
+#[cfg(not(any(
+    feature = "lab",
+    feature = "staging",
+    feature = "local-rehearsal",
+    feature = "mdbaselabs"
+)))]
 const PRODUCTION_ASSET_SHA256: &str =
     "7912e40838213e60b65848350d319a48019021317b112e3326429b250f0133d7";
 

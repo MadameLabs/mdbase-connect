@@ -1,6 +1,6 @@
-//! The embedded environment: the LAB, staging and production assets are exactly
-//! the authenticated ones, only their own builds embed them, and sign-in only
-//! reaches the build's control plane.
+//! The embedded environment: the LAB, staging, production and mdbaselabs assets
+//! are exactly the authenticated ones, only their own builds embed them, and
+//! sign-in only reaches the build's control plane.
 //! (Payload verification itself is tested in `mdbn-trust`.)
 
 use super::*;
@@ -23,7 +23,12 @@ fn lab_embeds_exactly_the_authenticated_asset() {
     assert!(Environment::Lab.trust_at(0).is_err());
 }
 
-#[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal")))]
+#[cfg(not(any(
+    feature = "lab",
+    feature = "staging",
+    feature = "local-rehearsal",
+    feature = "mdbaselabs"
+)))]
 #[test]
 fn absent_lab_feature_refuses_lab_trust_without_a_fallback() {
     assert!(
@@ -51,7 +56,12 @@ fn synthetic_fixture_pins_are_valid_and_do_not_authenticate_the_build() {
     }
 }
 
-#[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal")))]
+#[cfg(not(any(
+    feature = "lab",
+    feature = "staging",
+    feature = "local-rehearsal",
+    feature = "mdbaselabs"
+)))]
 #[test]
 fn production_embeds_exactly_the_reviewed_asset() {
     assert_eq!(Environment::Production.name(), "production");
@@ -85,7 +95,12 @@ fn production_embeds_exactly_the_reviewed_asset() {
     assert!(Environment::Production.trust_at(0).is_err());
 }
 
-#[cfg(not(any(feature = "lab", feature = "staging", feature = "local-rehearsal")))]
+#[cfg(not(any(
+    feature = "lab",
+    feature = "staging",
+    feature = "local-rehearsal",
+    feature = "mdbaselabs"
+)))]
 #[test]
 fn production_refuses_any_other_asset_bytes_or_context() {
     let now = 1_792_698_307_649 + 1;
@@ -108,7 +123,12 @@ fn production_refuses_any_other_asset_bytes_or_context() {
     }
 }
 
-#[cfg(any(feature = "lab", feature = "staging", feature = "local-rehearsal"))]
+#[cfg(any(
+    feature = "lab",
+    feature = "staging",
+    feature = "local-rehearsal",
+    feature = "mdbaselabs"
+))]
 #[test]
 fn only_production_builds_embed_production_trust() {
     assert!(Environment::Production.trust().is_err());
@@ -233,6 +253,8 @@ fn the_build_feature_selects_the_environment() {
         Environment::Lab
     } else if cfg!(feature = "staging") {
         Environment::Staging
+    } else if cfg!(feature = "mdbaselabs") {
+        Environment::MdbaseLabs
     } else {
         Environment::Production
     };
@@ -254,6 +276,7 @@ fn sign_in_defaults_to_and_only_accepts_the_build_environment() {
         Environment::Lab,
         Environment::Staging,
         Environment::Production,
+        Environment::MdbaseLabs,
     ];
     for env in managed {
         assert_eq!(sign_in_server_for(env, None).unwrap(), env.control_plane());
@@ -345,4 +368,96 @@ fn only_hermetic_tests_reach_a_loopback_control_plane() {
             "{name} enables the loopback test hook"
         );
     }
+}
+
+/// Our `mdbaselabs` build embeds the test asset of `config/next-trust`, pinned by
+/// digest (Trocado pelo asset real na Task 3 do plano pilha-next-no-labs).
+#[cfg(feature = "mdbaselabs")]
+#[test]
+fn mdbaselabs_embeds_exactly_the_test_asset() {
+    use super::mdbaselabs;
+    assert_eq!(Environment::embedded(), Environment::MdbaseLabs);
+    assert_eq!(Environment::MdbaseLabs.name(), "mdbaselabs");
+    assert_eq!(
+        Environment::MdbaseLabs.control_plane(),
+        "https://next.madamelabs.com.br"
+    );
+    let context = mdbaselabs::context().unwrap();
+    assert_eq!(mdbaselabs::ASSET.len(), 863);
+    assert_eq!(
+        sha2::Sha256::digest(mdbaselabs::ASSET).as_slice(),
+        context.sha256
+    );
+    assert_eq!(
+        mdbaselabs::ASSET,
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../config/next-trust/mdbaselabs.json"
+        ))
+        .unwrap()
+    );
+    let trust = authenticated().unwrap();
+    assert_eq!(trust.environment, "mdbaselabs");
+    assert_eq!(trust.cp_origin, "https://next.madamelabs.com.br");
+    assert_eq!(trust.log_origin, "https://next-log.madamelabs.com.br");
+    assert_eq!(trust.roots.len(), 1);
+    assert_eq!(trust.policy_pins.validate(), Ok(()));
+    // Before the asset was issued, nothing verifies.
+    assert!(Environment::MdbaseLabs.trust_at(0).is_err());
+    // An mdbaselabs build embeds no other environment's trust.
+    assert!(Environment::Lab.trust().is_err());
+    assert!(Environment::Staging.trust().is_err());
+    assert!(Environment::Production.trust().is_err());
+}
+
+#[cfg(feature = "mdbaselabs")]
+#[test]
+fn mdbaselabs_refuses_any_other_asset_bytes_or_context() {
+    use super::mdbaselabs;
+    let now = 1_789_000_000_000 + 1;
+    let context = mdbaselabs::context().unwrap();
+    assert!(mdbn_trust::verify(mdbaselabs::ASSET, &context, now).is_ok());
+    let mut changed = mdbaselabs::ASSET.to_vec();
+    let at = changed.iter().position(|b| *b == b'7').unwrap();
+    changed[at] = b'8';
+    assert!(mdbn_trust::verify(&changed, &context, now).is_err());
+    // Neither another environment's asset nor any crossed context field.
+    for other in ["production.json", "lab.json", "staging.json"] {
+        let asset = std::fs::read(format!(
+            "{}/../../../config/next-trust/{other}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        assert!(
+            mdbn_trust::verify(&asset, &context, now).is_err(),
+            "{other}"
+        );
+    }
+    let edits: [fn(&mut Context); 6] = [
+        |c: &mut Context| c.environment = "production".into(),
+        |c: &mut Context| c.log_origin = "https://log.mdbase.dev".into(),
+        |c: &mut Context| c.control_plane_origin = "https://connect.mdbase.dev".into(),
+        |c: &mut Context| c.control_plane_origin = "https://connect-staging.mdbase.dev".into(),
+        |c: &mut Context| c.log_origin = "https://next-log.madamelabs.com.br.evil.example".into(),
+        |c: &mut Context| c.source.version = "0.0.0-other".into(),
+    ];
+    for edit in edits {
+        let mut other = mdbaselabs::context().unwrap();
+        edit(&mut other);
+        assert!(mdbn_trust::verify(mdbaselabs::ASSET, &other, now).is_err());
+    }
+}
+
+#[cfg(not(feature = "mdbaselabs"))]
+#[test]
+fn absent_mdbaselabs_feature_refuses_its_trust_without_a_fallback() {
+    assert!(
+        Environment::MdbaseLabs
+            .trust_at(0)
+            .unwrap_err()
+            .0
+            .contains("--features mdbaselabs")
+    );
+    assert!(Environment::MdbaseLabs.trust().is_err());
+    assert_ne!(Environment::embedded(), Environment::MdbaseLabs);
 }

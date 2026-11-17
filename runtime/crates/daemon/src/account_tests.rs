@@ -561,6 +561,7 @@ async fn account_state_of_another_environment_never_reconnects() {
         Environment::Production,
         Environment::Staging,
         Environment::Lab,
+        Environment::MdbaseLabs,
     ] {
         if other == Environment::embedded() {
             continue;

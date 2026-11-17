@@ -23,6 +23,11 @@ lab = ["mdbn-trust/lab"]
 # the staging control plane. Incompatible with LAB and local-rehearsal; never a
 # shipped feature (scripts/check-release-features.sh).
 staging = []
+# Our mdbaselabs build (pilha-next-no-labs): embeds the mdbaselabs trust asset
+# (config/next-trust/mdbaselabs.json, pinned by digest in src/trust/mdbaselabs.rs)
+# and signs in only to the NEXT control plane on Labs. Incompatible with LAB,
+# staging and local-rehearsal. Unlike those, it is a shipped environment of our CLI.
+mdbaselabs = []
 # Explicit per-stack local artifact: embeds signed PUBLIC local trust inputs.
 # Incompatible with LAB; managed builds do not compile the local input module.
 local-rehearsal = ["mdbn-trust/local-rehearsal"]
