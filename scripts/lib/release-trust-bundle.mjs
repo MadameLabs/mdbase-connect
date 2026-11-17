@@ -9,7 +9,7 @@ const commit = s => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s);
 const digest = s => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const origin = s => { try { const u = new URL(s); return u.protocol === 'https:' && u.origin === s && !u.username && !u.password; } catch { return false; } };
 function need(ok, message) { if (!ok) throw new Error(message); }
-const environment = s => s === 'lab' || s === 'staging' || s === 'production';
+const environment = s => s === 'lab' || s === 'staging' || s === 'production' || s === 'mdbaselabs';
 
 /** Caller authenticates the original image bundle BEFORE invoking this builder. */
 export function buildTrustBundle({ imageBundleBytes, assetBytes, publication, qualification }) {

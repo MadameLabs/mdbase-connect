@@ -46,8 +46,8 @@ test('staging inventory binds only its environment-specific path; publication re
  }
 });
 test('closed JSON Schema agrees with every fixed environment/path pair and rejects crossover',()=>{
- for(const environment of ['lab','staging','production']){
-  const x=input();x.assetBytes=Buffer.from(JSON.stringify({...asset,environment,control_plane_origin:environment==='production'?'https://connect.mdbase.dev':asset.control_plane_origin}));const m=buildTrustBundle(x);
+ for(const environment of ['lab','staging','production','mdbaselabs']){
+  const x=input();x.assetBytes=Buffer.from(JSON.stringify({...asset,environment,control_plane_origin:({production:'https://connect.mdbase.dev',mdbaselabs:'https://next.madamelabs.com.br'})[environment]??asset.control_plane_origin}));const m=buildTrustBundle(x);
   assert.equal(validateSchema(m),true,JSON.stringify(validateSchema.errors));
   for(const edit of [a=>a.path=`next-trust/${environment==='lab'?'staging':'lab'}.json`,a=>a.environment=environment==='lab'?'staging':'lab',a=>a.environment='unknown',a=>a.extra=true]){
    const bad=structuredClone(m);edit(bad.trustAssets[0]);assert.equal(validateSchema(bad),false);
@@ -59,4 +59,9 @@ test('rejects invalid UTF8, unapproved environment and nonproduction CP',()=>{
  for (const environment of ['unknown','production']) {
   x.assetBytes=Buffer.from(JSON.stringify({...asset,environment}));assert.throws(()=>buildTrustBundle(x));
  }
+});
+test('mdbaselabs inventory binds only next-trust/mdbaselabs.json and its own control origin',()=>{
+ const x=input();x.assetBytes=Buffer.from(JSON.stringify({...asset,environment:'mdbaselabs',control_plane_origin:'https://next.madamelabs.com.br',log_origin:'https://next-log.madamelabs.com.br'}));
+ const m=buildTrustBundle(x);assert.equal(m.trustAssets[0].path,'next-trust/mdbaselabs.json');validateTrustBundle(m);
+ const bad=structuredClone(m);bad.trustAssets[0].controlPlaneOrigin='https://connect.mdbase.dev';assert.equal(validateSchema(bad),false);
 });

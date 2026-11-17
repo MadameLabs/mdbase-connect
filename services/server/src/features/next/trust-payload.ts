@@ -8,7 +8,7 @@ import { keyId } from "./policy-wire.js";
 
 export interface NextTrustPayload {
   schema_version: 1;
-  environment: "lab" | "staging" | "production";
+  environment: "lab" | "staging" | "production" | "mdbaselabs";
   control_plane_origin: string;
   log_origin: string;
   issued_at: number;
@@ -61,7 +61,7 @@ function canonical(value: unknown): string {
 export function encodeNextTrustPayload(value: unknown): Uint8Array {
   const r = record(value, ["schema_version", "environment", "control_plane_origin", "log_origin", "issued_at", "source", "roots", "policy_keys"]);
   requireValue(r.schema_version === 1, "unsupported schema version");
-  requireValue(typeof r.environment === "string" && ["lab", "staging", "production"].includes(r.environment), "environment");
+  requireValue(typeof r.environment === "string" && ["lab", "staging", "production", "mdbaselabs"].includes(r.environment), "environment");
   origin(r.control_plane_origin); origin(r.log_origin);
   requireValue(integer(r.issued_at), "issued_at");
   const source = record(r.source, ["repository", "commit", "version"]);

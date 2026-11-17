@@ -39,6 +39,12 @@ describe("NEXT signed-release public trust asset", () => {
     const expected = expectation(bytes); expected.source = { ...expected.source, [field]: "wrong" } as NextTrustPayload["source"];
     expect(() => validateNextTrustPayload(bytes, expected)).toThrow();
   });
+  it("encodes and validates our mdbaselabs environment under its own authenticated context", () => {
+    const p = { ...fixture(), environment: "mdbaselabs" as const };
+    const bytes = encodeNextTrustPayload(p);
+    expect(validateNextTrustPayload(bytes, { ...expectation(bytes), environment: "mdbaselabs" })).toEqual(p);
+    expect(() => validateNextTrustPayload(bytes, expectation(bytes))).toThrow("environment/origin binding");
+  });
   it("rejects a weak root signing point before certificate processing", () => {
     const p = fixture(); const pk = Buffer.alloc(32); pk[0] = 1;
     p.roots = [{ key_id: h(keyId(pk)), public_key: h(pk) }];
