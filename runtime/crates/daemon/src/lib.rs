@@ -74,6 +74,7 @@ mod session_diagnostics;
 pub mod sync;
 pub mod sync_failure;
 pub mod takeover;
+mod tasks;
 pub mod trust;
 pub mod update;
 pub mod watch;

@@ -20,6 +20,7 @@ pub(super) async fn run_command(
             unreachable!("handled before the runtime starts")
         }
         Command::Data(cmd) => crate::data::run(cmd, profile, out.json).await,
+        Command::Tasks(cmd) => Ok(crate::tasks::run(cmd, profile, out.json).await),
         Command::Daemon(DaemonCmd::Start) => daemon_start(profile, out).await,
         Command::Daemon(DaemonCmd::Stop) => daemon_stop(profile, out).await,
         Command::Daemon(DaemonCmd::Status) => {

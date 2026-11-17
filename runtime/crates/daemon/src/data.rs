@@ -52,10 +52,10 @@ const OPENING_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) struct Target {
     /// The collection folder (default: the current directory).
     #[arg(short = 'C', long, value_name = "PATH")]
-    root: Option<PathBuf>,
+    pub(crate) root: Option<PathBuf>,
     /// A collection registered with the daemon: ID, ID prefix or name.
     #[arg(short = 'c', long, value_name = "COLLECTION", conflicts_with = "root")]
-    collection: Option<String>,
+    pub(crate) collection: Option<String>,
 }
 
 /// The data commands.
@@ -458,7 +458,7 @@ pub(crate) async fn run(
 /// transport takes only these: device approval and the other host-only methods
 /// cannot be reached from a data command.
 #[derive(Debug, Clone, Copy)]
-enum Method {
+pub(crate) enum Method {
     Get,
     Query,
     Validate,
@@ -479,7 +479,7 @@ impl Method {
 }
 
 /// Where requests go.
-enum Transport {
+pub(crate) enum Transport {
     /// A host session on the daemon's replica endpoint.
     Daemon {
         session: ClientSession<BoxStream>,
@@ -509,7 +509,7 @@ impl Transport {
     }
 
     /// One request, answered.
-    async fn call(&mut self, method: Method, params: Cbor) -> Result<Cbor, ClientError> {
+    pub(crate) async fn call(&mut self, method: Method, params: Cbor) -> Result<Cbor, ClientError> {
         let request = ClientRequest {
             id: 0,
             method: method.name().into(),
@@ -611,7 +611,7 @@ fn hello() -> ClientRequest {
 }
 
 /// Resolve the target and open a session on it.
-async fn open(target: &Target, profile: &Profile) -> Result<Transport, ClientError> {
+pub(crate) async fn open(target: &Target, profile: &Profile) -> Result<Transport, ClientError> {
     if let Some(arg) = &target.collection {
         let list = crate::cli::collections(profile).await?;
         let status = crate::cli::pick(&list, arg)?.clone();
@@ -840,12 +840,12 @@ fn problem(p: &Problem) -> ControlError {
     }
 }
 
-fn decode<T: Wire>(c: &Cbor) -> Result<T, ControlError> {
+pub(crate) fn decode<T: Wire>(c: &Cbor) -> Result<T, ControlError> {
     T::from_cbor(c).map_err(|e| ControlError::internal(format!("unreadable result: {e:?}")))
 }
 
 /// Request params: a map keyed 0, 1, … in order, skipping nulls.
-fn params(values: Vec<Cbor>) -> Cbor {
+pub(crate) fn params(values: Vec<Cbor>) -> Cbor {
     Cbor::Map(
         values
             .into_iter()
@@ -856,7 +856,7 @@ fn params(values: Vec<Cbor>) -> Cbor {
     )
 }
 
-fn include(body: bool, document: bool, diagnostics: bool) -> Include {
+pub(crate) fn include(body: bool, document: bool, diagnostics: bool) -> Include {
     Include {
         effective: None,
         body: Some(body),
@@ -865,7 +865,7 @@ fn include(body: bool, document: bool, diagnostics: bool) -> Include {
     }
 }
 
-fn field(c: &Cbor, key: u64) -> Option<&Cbor> {
+pub(crate) fn field(c: &Cbor, key: u64) -> Option<&Cbor> {
     match c {
         Cbor::Map(m) => m
             .iter()
@@ -888,7 +888,7 @@ fn text(c: &Cbor, key: u64) -> Option<String> {
 /// path; the transport resolves each to its ID on the same route.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-enum WriteOp {
+pub(crate) enum WriteOp {
     Create {
         path: Option<String>,
         #[serde(rename = "type")]
@@ -999,15 +999,20 @@ struct Planned {
     to: Option<String>,
 }
 
-/// Apply `ops` as one mutation, waiting until it is in the files.
-async fn submit(
-    target: &Target,
-    profile: &Profile,
-    json: bool,
+/// What a mutation wrote: the receipt, and what each op was for the report.
+pub(crate) struct Applied {
+    pub(crate) receipt: Receipt,
+    planned: Vec<Planned>,
+}
+
+/// Sends `ops` as one mutation and waits until it is in the files. A rejected
+/// mutation is an error. Any other receipt is returned for the caller to read: a
+/// held or merged write is not a failure here.
+pub(crate) async fn apply(
+    t: &mut Transport,
     ops: Vec<WriteOp>,
     dry_run: bool,
-) -> Result<ExitCode, ClientError> {
-    let mut t = open(target, profile).await?;
+) -> Result<Applied, ClientError> {
     let now = mdbn_local_host::host::now_ms();
     let mut wire_ops = Vec::with_capacity(ops.len());
     let mut planned = Vec::with_capacity(ops.len());
@@ -1041,7 +1046,7 @@ async fn submit(
                 body,
                 if_revision,
             } => {
-                let id = record_id(&mut t, &path).await?;
+                let id = record_id(t, &path).await?;
                 let (unset, set): (Map<String, Value>, Map<String, Value>) =
                     fields.into_iter().partition(|(_, v)| v.is_null());
                 planned.push(Planned {
@@ -1066,7 +1071,7 @@ async fn submit(
                 }));
             }
             WriteOp::Delete { path, if_revision } => {
-                let id = record_id(&mut t, &path).await?;
+                let id = record_id(t, &path).await?;
                 planned.push(Planned {
                     verb: ("deleted", "delete"),
                     id,
@@ -1085,7 +1090,7 @@ async fn submit(
                 update_refs,
                 if_revision,
             } => {
-                let id = record_id(&mut t, &from).await?;
+                let id = record_id(t, &from).await?;
                 planned.push(Planned {
                     verb: ("renamed", "rename"),
                     id,
@@ -1144,6 +1149,19 @@ async fn submit(
         }
         _ => {}
     }
+    Ok(Applied { receipt, planned })
+}
+
+/// Apply `ops` as one mutation, waiting until it is in the files.
+async fn submit(
+    target: &Target,
+    profile: &Profile,
+    json: bool,
+    ops: Vec<WriteOp>,
+    dry_run: bool,
+) -> Result<ExitCode, ClientError> {
+    let mut t = open(target, profile).await?;
+    let Applied { receipt, planned } = apply(&mut t, ops, dry_run).await?;
     let records = receipt.records.unwrap_or_default();
     if json {
         print_json(&json!({
@@ -1364,11 +1382,11 @@ fn count(n: usize, noun: &str) -> String {
 
 // ---- types -----------------------------------------------------------------------
 
-struct TypeSummary {
-    name: String,
+pub(crate) struct TypeSummary {
+    pub(crate) name: String,
     path: String,
     version: Option<i64>,
-    definition: Option<Value>,
+    pub(crate) definition: Option<Value>,
     schema: Option<Value>,
 }
 
@@ -1389,7 +1407,7 @@ impl TypeSummary {
 }
 
 /// `describe`'s types (`replica/src/frames.rs`, `describe_cbor`).
-fn types(result: &Cbor) -> Result<Vec<TypeSummary>, ControlError> {
+pub(crate) fn types(result: &Cbor) -> Result<Vec<TypeSummary>, ControlError> {
     let Some(Cbor::Array(types)) = field(result, 1) else {
         return Err(ControlError::internal("unreadable describe result"));
     };
@@ -1476,7 +1494,7 @@ fn issue_json(i: &Issue) -> Value {
     v
 }
 
-fn map_json(m: &DataMap<WireValue>) -> Value {
+pub(crate) fn map_json(m: &DataMap<WireValue>) -> Value {
     Value::Object(m.0.iter().map(|(k, v)| (k.clone(), to_json(v))).collect())
 }
 
@@ -1494,7 +1512,7 @@ fn to_json(v: &WireValue) -> Value {
     }
 }
 
-fn to_wire(v: &Value) -> WireValue {
+pub(crate) fn to_wire(v: &Value) -> WireValue {
     match v {
         Value::Null => WireValue::Null,
         Value::Bool(b) => WireValue::Bool(*b),

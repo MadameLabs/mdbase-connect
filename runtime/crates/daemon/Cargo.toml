@@ -35,6 +35,8 @@ path = "src/main.rs"
 mdbn-wire.workspace = true
 mdbn-replica.workspace = true
 mdbn-trust.workspace = true
+# Task semantics for `mdbase tasks` (pure; the CLI does the I/O).
+mdbn-tasks.workspace = true
 # The shared native composition of a collection folder (store, host lock, host
 # services) for the collection runtime.
 mdbn-local-host.workspace = true
@@ -55,7 +57,7 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 sha2 = "0.10"
 semver = "1"
-time = { version = "0.3", features = ["parsing", "formatting"] }
+time = { version = "0.3", features = ["parsing", "formatting", "local-offset"] }
 hmac = "0.12"
 ring = "0.17"
 base64 = "0.22"

@@ -137,6 +137,10 @@ pub(super) enum Command {
     /// Records: reads, queries, validation, types and writes.
     #[command(flatten)]
     Data(crate::data::DataCmd),
+    /// Tasks: lists, status, projects, dependencies, archive and the timer, under the
+    /// collection's `task` type.
+    #[command(subcommand)]
+    Tasks(crate::tasks::TasksCmd),
 }
 
 #[derive(Debug, Subcommand)]
