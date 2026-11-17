@@ -31,6 +31,10 @@ use crate::secrets::{hex, uuid_string};
 const CONFIG_FILE: &str = "_config/mdbase-tasks.json";
 /// The type the task commands work on.
 const TASK_TYPE: &str = "task";
+/// The contract that marks the types whose records are people.
+const PERSON_CONTRACT: &str = "mdbase.person";
+/// The person type when no type implements the person contract.
+const PERSON_TYPE: &str = "pessoa";
 /// Records per `query` page; `list` and the other scans page until the end.
 const PAGE: u64 = 50;
 
@@ -330,7 +334,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             responsavel,
             status,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let people = match &responsavel {
                 Some(who) => Some(s.config_links(who)?),
                 None => None,
@@ -367,7 +371,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             Ok(Value::Array(out))
         }
         TasksCmd::Show { target, path } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let view = s.view(&path).await?;
             Ok(json!({
                 "path": view.path,
@@ -382,7 +386,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             marca,
             projeto,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let new = NewTask {
                 title,
                 assignees: responsavel,
@@ -402,7 +406,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             projeto,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let note = s.view(&path).await?;
             let new = NewTask {
                 title: String::new(),
@@ -421,14 +425,14 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             completed_date,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, true).await?;
             let view = s.view(&path).await?;
             let op = mdbn_tasks::set_status(
                 &s.binding,
                 &view,
                 &status,
                 completed_date.as_deref(),
-                &s.today,
+                s.today()?,
             )?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
         }
@@ -438,7 +442,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             projeto,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let view = s.view(&path).await?;
             let op = mdbn_tasks::link_projects(&s.binding, &view, &projeto)?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
@@ -449,7 +453,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             by,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let view = s.view(&path).await?;
             let existing: Vec<String> = all_records(&mut s.t, &[TASK_TYPE])
                 .await?
@@ -465,7 +469,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             by,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let view = s.view(&path).await?;
             let op = mdbn_tasks::unblock(&s.binding, &view, &by)?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
@@ -475,7 +479,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             path,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let view = s.view(&path).await?;
             let op = mdbn_tasks::archive(&s.binding, &view)?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
@@ -486,7 +490,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             date,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let view = s.view(&path).await?;
             let op = mdbn_tasks::skip(&s.binding, &view, &date)?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
@@ -497,7 +501,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             date,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let view = s.view(&path).await?;
             let op = mdbn_tasks::unskip(&s.binding, &view, &date)?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
@@ -508,10 +512,10 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             responsavel,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, true).await?;
             let person = s.timer_person(&responsavel).await?;
             let view = s.view(&path).await?;
-            let ops = mdbn_tasks::start(&s.binding, &view, &person, &s.now)?;
+            let ops = mdbn_tasks::start(&s.binding, &view, &person, s.now()?)?;
             s.write(&path, ops, write.if_revision.as_deref()).await
         }
         TasksCmd::Stop {
@@ -521,10 +525,10 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             status,
             write,
         } => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, true).await?;
             let person = s.timer_person(&responsavel).await?;
             let view = s.view(&path).await?;
-            let ops = mdbn_tasks::stop(&s.binding, &view, &person, &status, &s.now, &s.today)?;
+            let ops = mdbn_tasks::stop(&s.binding, &view, &person, &status, s.now()?, s.today()?)?;
             s.write(&path, ops, write.if_revision.as_deref()).await
         }
         TasksCmd::Timer(TimerCmd::Fix {
@@ -536,7 +540,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             reason,
             write,
         }) => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, true).await?;
             let view = s.view(&path).await?;
             let op = mdbn_tasks::retime(
                 &s.binding,
@@ -545,7 +549,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
                 start.as_deref(),
                 end.as_deref(),
                 &reason,
-                &s.now,
+                s.now()?,
             )?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
         }
@@ -553,7 +557,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             target,
             responsavel,
         }) => {
-            let mut s = Session::open(&target, profile).await?;
+            let mut s = Session::open(&target, profile, false).await?;
             let people = match &responsavel {
                 Some(who) => Some(s.config_links(who)?),
                 None => None,
@@ -563,7 +567,9 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
                 let view = view_of(&record);
                 for OpenEntry { person, start } in mdbn_tasks::open_entries(&s.binding, &view) {
                     let mine = match &people {
-                        Some(links) => links.contains(&strip_link(&person)),
+                        Some(links) => links
+                            .iter()
+                            .any(|link| strip_link(link) == strip_link(&person)),
                         None => true,
                     };
                     if mine {
@@ -576,34 +582,61 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
     }
 }
 
-/// The task type, the tasks configuration and the clock of one command, on the
-/// route the target resolves to.
+/// The local clock of a command. `utc` when the local offset cannot be read: the
+/// times are then UTC and the result says so.
+struct Clock {
+    now: String,
+    today: String,
+    utc: bool,
+}
+
+/// The task type, the tasks configuration and, for the commands that write times,
+/// the clock, on the route the target resolves to.
 struct Session {
     t: Transport,
     binding: Binding,
     /// The collection's tasks configuration; `None` when the collection has no file.
     config: Option<TasksConfig>,
-    /// Local time with its offset, to the millisecond.
-    now: String,
-    /// Local date, `YYYY-MM-DD`.
-    today: String,
+    /// Present only for the commands that write a time or a date.
+    clock: Option<Clock>,
 }
 
 impl Session {
-    async fn open(target: &Target, profile: &Profile) -> Result<Session, Failure> {
+    /// Opens the session. The clock is read before the transport is opened, so a
+    /// command that does not need it never touches the time zone.
+    async fn open(
+        target: &Target,
+        profile: &Profile,
+        needs_clock: bool,
+    ) -> Result<Session, Failure> {
+        let clock = needs_clock.then(clock);
         let root = folder_of(target, profile).await?;
         let mut t = data::open(target, profile).await?;
-        let definition = task_definition(&mut t).await?;
-        let binding = Binding::from_type(&definition)?;
+        let types = describe(&mut t).await?;
+        let binding = Binding::from_type(&task_definition(&types)?)?;
         let config = read_config(&root)?;
-        let (now, today) = clock()?;
         Ok(Session {
             t,
             binding,
             config,
-            now,
-            today,
+            clock,
         })
+    }
+
+    /// Local time to the millisecond, for a command that opened with its clock.
+    fn now(&self) -> Result<&str, Failure> {
+        Ok(&self.clock_ref()?.now)
+    }
+
+    /// Local date, for a command that opened with its clock.
+    fn today(&self) -> Result<&str, Failure> {
+        Ok(&self.clock_ref()?.today)
+    }
+
+    fn clock_ref(&self) -> Result<&Clock, Failure> {
+        self.clock
+            .as_ref()
+            .ok_or_else(|| Failure::new("internal", "the command opened without its clock"))
     }
 
     /// The configuration the planners use: the file's, or the defaults.
@@ -651,23 +684,31 @@ impl Session {
         self.check_people(&links).await
     }
 
-    /// Checks that each link has a note named `<name>.md` in the collection. Only
-    /// done when the collection has a tasks configuration.
+    /// Checks that each link names a person note: a record of a person type (see
+    /// `person_types`) whose file name is `<name>.md`. Only done when the collection
+    /// has a tasks configuration.
     async fn check_people(&mut self, links: &[String]) -> Result<(), Failure> {
         if self.config.is_none() || links.is_empty() {
             return Ok(());
         }
-        let names: HashSet<String> = all_records(&mut self.t, &[])
-            .await?
-            .iter()
-            .filter_map(|r| file_name(&r.path).map(str::to_string))
-            .collect();
+        let types = describe(&mut self.t).await?;
+        let people = person_types(&types);
+        let names: HashSet<String> = if people.is_empty() {
+            HashSet::new()
+        } else {
+            let refs: Vec<&str> = people.iter().map(String::as_str).collect();
+            all_records(&mut self.t, &refs)
+                .await?
+                .iter()
+                .filter_map(|r| file_name(&r.path).map(str::to_string))
+                .collect()
+        };
         for link in links {
             let name = strip_link(link);
             if !names.contains(&format!("{name}.md")) {
                 return Err(Failure::new(
                     "responsavel_desconhecido",
-                    format!("no person note named {name}.md in the collection"),
+                    format!("no person note named {name}.md among the collection's person records"),
                 ));
             }
         }
@@ -693,16 +734,30 @@ impl Session {
 
     /// Sends the planned writes as one mutation. An `if_revision` given on the
     /// command replaces the revision of each update. A held or merged write is an
-    /// error, never a success.
+    /// error, never a success. A UTC clock adds `"warning":"clock_utc"` to the result.
     async fn write(
         &mut self,
         path: &str,
         ops: Vec<Value>,
         if_revision: Option<&str>,
     ) -> Result<Value, Failure> {
-        if ops.is_empty() {
-            return Ok(json!({"path": path, "changed": false}));
+        let mut result = if ops.is_empty() {
+            json!({"path": path, "changed": false})
+        } else {
+            self.apply_ops(path, ops, if_revision).await?
+        };
+        if self.clock.as_ref().is_some_and(|c| c.utc) {
+            result["warning"] = json!("clock_utc");
         }
+        Ok(result)
+    }
+
+    async fn apply_ops(
+        &mut self,
+        path: &str,
+        ops: Vec<Value>,
+        if_revision: Option<&str>,
+    ) -> Result<Value, Failure> {
         let mut batch = Vec::with_capacity(ops.len());
         for mut op in ops {
             let is_update = op.get("op").and_then(Value::as_str) == Some("update");
@@ -774,19 +829,55 @@ async fn folder_of(target: &Target, profile: &Profile) -> Result<PathBuf, Failur
 }
 
 /// The `task` type's definition, as `Binding::from_type` reads it.
-async fn task_definition(t: &mut Transport) -> Result<Value, Failure> {
-    let result = t
-        .call(Method::Describe, data::params(vec![Cbor::Bool(true)]))
-        .await?;
-    data::types(&result)?
-        .into_iter()
+fn task_definition(types: &[data::TypeSummary]) -> Result<Value, Failure> {
+    types
+        .iter()
         .find(|ty| ty.name == TASK_TYPE)
-        .and_then(|ty| ty.definition)
+        .and_then(|ty| ty.definition.clone())
         .ok_or_else(|| {
             Failure::new(
                 "type_missing",
-                "the collection has no task type (_types/task.md)",
+                "the collection has no task type; declare it in its types folder",
             )
+        })
+}
+
+/// The collection's types, with their definitions.
+async fn describe(t: &mut Transport) -> Result<Vec<data::TypeSummary>, Failure> {
+    let result = t
+        .call(Method::Describe, data::params(vec![Cbor::Bool(true)]))
+        .await?;
+    Ok(data::types(&result)?)
+}
+
+/// The types whose records are people: those implementing `mdbase.person`; when no
+/// type does, the type named `pessoa`.
+fn person_types(types: &[data::TypeSummary]) -> Vec<String> {
+    let by_contract: Vec<String> = types
+        .iter()
+        .filter(|ty| implements(ty, PERSON_CONTRACT))
+        .map(|ty| ty.name.clone())
+        .collect();
+    if !by_contract.is_empty() {
+        return by_contract;
+    }
+    types
+        .iter()
+        .filter(|ty| ty.name == PERSON_TYPE)
+        .map(|ty| ty.name.clone())
+        .collect()
+}
+
+/// Whether a type's `implements` lists the contract.
+fn implements(ty: &data::TypeSummary, contract: &str) -> bool {
+    ty.definition
+        .as_ref()
+        .and_then(|d| d.get("implements"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("contract").and_then(Value::as_str) == Some(contract))
         })
 }
 
@@ -808,10 +899,14 @@ fn read_config(root: &Path) -> Result<Option<TasksConfig>, Failure> {
     Ok(Some(TasksConfig::from_json(&value)?))
 }
 
-/// Local time to the millisecond with its offset, and the local date.
-fn clock() -> Result<(String, String), Failure> {
-    let offset = UtcOffset::current_local_offset()
-        .map_err(|_| Failure::new("clock_unavailable", "the local time zone cannot be read"))?;
+/// The local clock: times with the local offset to the millisecond, and the local
+/// date. When the offset cannot be read (the `time` crate refuses it in a
+/// multi-threaded process on Unix), UTC, flagged by `utc`.
+fn clock() -> Clock {
+    let (offset, utc) = match UtcOffset::current_local_offset() {
+        Ok(offset) => (offset, false),
+        Err(_) => (UtcOffset::UTC, true),
+    };
     let local = OffsetDateTime::now_utc().to_offset(offset);
     let sign = if offset.is_negative() { '-' } else { '+' };
     let zone = format!(
@@ -832,7 +927,7 @@ fn clock() -> Result<(String, String), Failure> {
         local.second(),
         local.millisecond()
     );
-    Ok((now, today))
+    Clock { now, today, utc }
 }
 
 /// Every record of the given types (every record when none), a page at a time,
@@ -913,4 +1008,60 @@ fn op_path(op: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use mdbn_wire::client::{PublishState, Receipt, ReceiptState};
+    use mdbn_wire::common::B16;
+    use mdbn_wire::entry::{Conflict, ConflictKind, ConflictValue};
+
+    use super::held;
+
+    fn receipt(conflicts: Option<Vec<Conflict>>, published: Option<PublishState>) -> Receipt {
+        Receipt {
+            mutation: B16([7; 16]),
+            state: ReceiptState::Confirmed,
+            seq: None,
+            status: None,
+            conflicts,
+            records: None,
+            problem: None,
+            published,
+            relocated_from: None,
+        }
+    }
+
+    fn conflict() -> Conflict {
+        Conflict {
+            kind: ConflictKind::Field,
+            id: B16([0; 16]),
+            field: Some("status".into()),
+            base: None,
+            kept: ConflictValue::Missing,
+            lost: ConflictValue::Missing,
+        }
+    }
+
+    #[test]
+    fn held_recusa_recibo_com_conflitos() {
+        let r = receipt(Some(vec![conflict()]), Some(PublishState::Published));
+        let f = held(&r).unwrap_err();
+        assert_eq!(f.code, "write_held");
+        assert!(f.message.contains("1 conflict"), "{}", f.message);
+    }
+
+    #[test]
+    fn held_recusa_recibo_nao_publicado() {
+        let r = receipt(None, Some(PublishState::NotPublished));
+        let f = held(&r).unwrap_err();
+        assert_eq!(f.code, "write_held");
+        assert!(f.message.contains("not written"), "{}", f.message);
+    }
+
+    #[test]
+    fn held_aceita_recibo_publicado_sem_conflitos() {
+        assert!(held(&receipt(None, Some(PublishState::Published))).is_ok());
+        assert!(held(&receipt(Some(vec![]), Some(PublishState::Published))).is_ok());
+    }
 }

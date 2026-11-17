@@ -40,9 +40,29 @@ fn fixture(tag: &str, config: Option<&str>) -> Fixture {
         format!("---\n{TASK_TYPE}\n---\n"),
     )
     .unwrap();
+    // The person and brand types: a person is a record of the type that marks
+    // people (here `pessoa`, the fallback), a brand is a record of another type.
     std::fs::write(
-        root.join("pessoas/Arthur.md"),
-        "---\ntype: pessoa\ntitle: Arthur\n---\n",
+        root.join("_types/pessoa.md"),
+        "---\nkind: mdbase.type\nname: pessoa\nmatch:\n  path_glob: \"pessoas/**/*.md\"\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("_types/marca.md"),
+        "---\nkind: mdbase.type\nname: marca\nmatch:\n  path_glob: \"02-marcas/**/*.md\"\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
+    )
+    .unwrap();
+    for person in ["Arthur", "Mayara"] {
+        std::fs::write(
+            root.join(format!("pessoas/{person}.md")),
+            format!("---\ntype: pessoa\ntitle: {person}\n---\n"),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(root.join("02-marcas")).unwrap();
+    std::fs::write(
+        root.join("02-marcas/Madame_Labs.md"),
+        "---\ntype: marca\ntitle: Madame Labs\n---\n",
     )
     .unwrap();
     if let Some(text) = config {
@@ -199,14 +219,51 @@ fn responsavel_sem_nota_recusa() {
     let (code, v) = f.json(&["tasks", "create", "Sem dona", "--responsavel", "Fulano"]);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["error"], "responsavel_desconhecido", "{v}");
-    assert!(v["message"].as_str().unwrap().contains("Fulano"), "{v}");
+    assert!(v["message"].as_str().unwrap().contains("Fulano.md"), "{v}");
+}
+
+#[test]
+fn marca_nao_passa_como_pessoa() {
+    // `Madame_Labs.md` exists, but it is a brand (another type), not a person.
+    let f = fixture("tmp", Some("{}"));
+    let (code, v) = f.json(&[
+        "tasks",
+        "create",
+        "Sem dona",
+        "--responsavel",
+        "Madame_Labs",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "responsavel_desconhecido", "{v}");
+}
+
+#[test]
+fn timer_status_lista_so_os_da_pessoa() {
+    let f = fixture("tts", Some("{}"));
+    for (title, who) in [("Tarefa A", "Arthur"), ("Tarefa B", "Mayara")] {
+        let (code, v) = f.json(&["tasks", "create", title, "--responsavel", who]);
+        assert_eq!(code, 0, "{v}");
+        let path = v["result"]["path"].as_str().unwrap().to_string();
+        let (code, v) = f.json(&["tasks", "start", &path, "--responsavel", who]);
+        assert_eq!(code, 0, "{v}");
+    }
+
+    let (code, v) = f.json(&["tasks", "timer", "status"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"].as_array().unwrap().len(), 2, "{v}");
+
+    let (code, v) = f.json(&["tasks", "timer", "status", "--responsavel", "Mayara"]);
+    assert_eq!(code, 0, "{v}");
+    let entries = v["result"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{v}");
+    assert_eq!(entries[0]["person"], "Mayara", "{v}");
 }
 
 #[test]
 fn responsavel_grupo_recusa_o_cronometro() {
     let f = fixture(
         "tgr",
-        Some("{\"people\":{\"labs\":[\"[[Arthur]]\",\"[[Mayara]]\"]}}"),
+        Some("{\"people\":{\"labs\":[\"[[Arthur]]\",\"[[Fulano]]\"]}}"),
     );
     let (code, v) = f.json(&[
         "tasks",
