@@ -200,6 +200,7 @@ pub const PORTABLE: &[&str] = &[
     "mdbn-migrate-portable",
     "mdbn-wasm",
     "mdbase-wasm",
+    "mdbn-tasks",
 ];
 
 /// Additional crates whose *library* must still be deterministic.

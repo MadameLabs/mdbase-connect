@@ -84,3 +84,12 @@ fn tipo_sem_contrato_falha() {
         Ok(_) => panic!("type without tasknotes.task contract must fail"),
     }
 }
+
+#[test]
+fn tipo_sem_implements_falha() {
+    let sem_implements = json!({"name": "task"});
+    match Binding::from_type(&sem_implements) {
+        Err(TaskError { code, .. }) => assert_eq!(code, "type_without_tasknotes_contract"),
+        Ok(_) => panic!("type without an implements key must fail"),
+    }
+}
