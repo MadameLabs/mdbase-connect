@@ -266,7 +266,10 @@ fn verify_inner(
             local_origin(&p.log_origin)?,
         )
     } else {
-        if !matches!(p.environment.as_str(), "lab" | "staging" | "production") {
+        if !matches!(
+            p.environment.as_str(),
+            "lab" | "staging" | "production" | "mdbaselabs"
+        ) {
             return bad("unknown environment");
         }
         (
@@ -405,7 +408,10 @@ pub fn require_append_only(current: &Trust, history: &[Trust]) -> Result<(), Inv
         return bad("history inventory missing or exceeds bound; never truncate history");
     }
     fn consistent(trust: &Trust) -> Result<(), Invalid> {
-        if !matches!(trust.environment.as_str(), "lab" | "staging" | "production") {
+        if !matches!(
+            trust.environment.as_str(),
+            "lab" | "staging" | "production" | "mdbaselabs"
+        ) {
             return bad("history environment");
         }
         if trust.policy_pins.roots.len() > MAX_PIN_ROOTS
@@ -564,6 +570,8 @@ pub fn normalized_json(trust: &Trust, context: &Context) -> Result<String, Inval
 mod history_tests;
 #[cfg(all(test, feature = "local-rehearsal"))]
 mod local_tests;
+#[cfg(test)]
+mod mdbaselabs_tests;
 #[cfg(test)]
 mod public_tests;
 

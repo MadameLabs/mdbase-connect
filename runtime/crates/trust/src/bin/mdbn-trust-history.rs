@@ -103,7 +103,7 @@ fn qualify(path: &Path, expected_digest: [u8; 32], now: u64) -> Result<String, I
     if ledger.schema != "mdbn-trust/history/1"
         || !matches!(
             ledger.environment.as_str(),
-            "lab" | "staging" | "production"
+            "lab" | "staging" | "production" | "mdbaselabs"
         )
         || ledger.history.is_empty()
         || ledger.history.len() > MAX_HISTORY_ASSETS
