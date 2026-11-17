@@ -722,3 +722,223 @@ fn molde_fora_dos_caminhos_nao_e_projeto() {
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["error"], "project_not_found", "{v}");
 }
+
+// --- gate (hooks.test.mjs, cli.test.mjs hook-start) ---
+
+/// A SessionStart payload as the host sends it.
+const HOOK: &[u8] =
+    b"{\"session_id\":\"abc\",\"cwd\":\"/tmp\",\"hook_event_name\":\"SessionStart\"}";
+
+impl Fixture {
+    /// Runs with `stdin` piped in and `env` set; the collection is `-C`.
+    fn run_stdin(&self, args: &[&str], stdin: &[u8], env: &[(&str, &str)]) -> Output {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mdbase"));
+        cmd.arg("--state-dir")
+            .arg(&self.state)
+            .args(args)
+            .arg("-C")
+            .arg(&self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().unwrap();
+        // The child may exit before reading (an invalid command): not an error here.
+        let _ = child.stdin.take().unwrap().write_all(stdin);
+        child.wait_with_output().unwrap()
+    }
+}
+
+/// The gate's stdout: exit 0, one JSON line, parsed.
+fn gate_envelope(out: &Output) -> Value {
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout.clone()).unwrap();
+    assert_eq!(
+        text.lines().count(),
+        1,
+        "stdout must be one envelope: {text}"
+    );
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"))
+}
+
+#[test]
+fn gate_claude_tem_envelope() {
+    let f = fixture("tgc", Some("{}"));
+    let out = f.run_stdin(
+        &["tasks", "gate", "--agent", "claude"],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(
+        v["hookSpecificOutput"]["hookEventName"], "SessionStart",
+        "{v}"
+    );
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(ctx.contains("Gate TaskNotes obrigatório"), "{ctx}");
+    assert!(
+        ctx.contains("mdbase tasks list --responsavel <p> -C "),
+        "{ctx}"
+    );
+    assert!(ctx.contains(&format!("-C {}", f.root.display())), "{ctx}");
+    assert!(
+        ctx.contains("mdbase tasks start \"CAMINHO_EXATO\""),
+        "{ctx}"
+    );
+    assert!(ctx.contains("--status <status>"), "{ctx}");
+    assert!(ctx.contains("aprovacao") && ctx.contains("pausa"), "{ctx}");
+    for old in [
+        "--session",
+        "--agent",
+        "--backend",
+        "--config",
+        "tasknotes-agent",
+    ] {
+        assert!(
+            !ctx.contains(old),
+            "{old} must not survive in the context: {ctx}"
+        );
+    }
+}
+
+#[test]
+fn gate_codex_sem_ok() {
+    let f = fixture("tgx", Some("{}"));
+    let out = f.run_stdin(
+        &["tasks", "gate", "--agent", "codex"],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    assert!(v.get("ok").is_none(), "codex envelope has no ok: {v}");
+    assert_eq!(
+        v["hookSpecificOutput"]["hookEventName"], "SessionStart",
+        "{v}"
+    );
+    assert!(
+        v["hookSpecificOutput"]["additionalContext"].is_string(),
+        "{v}"
+    );
+}
+
+#[test]
+fn gate_lista_cronometros_abertos_da_pessoa() {
+    let f = fixture("tgl", Some("{\"people\":{\"arthur\":[\"[[Arthur]]\"]}}"));
+    let mut paths = Vec::new();
+    for (title, who) in [("Tarefa A", "Arthur"), ("Tarefa B", "Mayara")] {
+        let (code, v) = f.json(&["tasks", "create", title, "--responsavel", who]);
+        assert_eq!(code, 0, "{v}");
+        let path = v["result"]["path"].as_str().unwrap().to_string();
+        let (code, v) = f.json(&["tasks", "start", &path, "--responsavel", who]);
+        assert_eq!(code, 0, "{v}");
+        paths.push(path);
+    }
+    let out = f.run_stdin(
+        &[
+            "tasks",
+            "gate",
+            "--agent",
+            "claude",
+            "--responsavel",
+            "arthur",
+        ],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(ctx.contains("Cronômetros abertos de arthur:"), "{ctx}");
+    assert!(
+        ctx.contains(&paths[0]),
+        "Arthur's open timer is listed: {ctx}"
+    );
+    assert!(
+        !ctx.contains(&paths[1]),
+        "Mayara's timer is not Arthur's: {ctx}"
+    );
+    assert!(ctx.contains(", há "), "the elapsed time is printed: {ctx}");
+    // The timers come last, as the adapter's context ends with them.
+    let last = ctx.trim_end().lines().last().unwrap();
+    assert!(last.starts_with("- ") && last.contains(&paths[0]), "{ctx}");
+}
+
+#[test]
+fn gate_usa_o_usuario_do_ambiente_sem_responsavel() {
+    let f = fixture("tgu", Some("{\"people\":{\"arthur\":[\"[[Arthur]]\"]}}"));
+    let (code, v) = f.json(&["tasks", "create", "Minha", "--responsavel", "Arthur"]);
+    assert_eq!(code, 0, "{v}");
+    let path = v["result"]["path"].as_str().unwrap().to_string();
+    let (code, v) = f.json(&["tasks", "start", &path, "--responsavel", "Arthur"]);
+    assert_eq!(code, 0, "{v}");
+
+    // USER is lowercased before the `people` lookup.
+    let out = f.run_stdin(
+        &["tasks", "gate", "--agent", "omp"],
+        HOOK,
+        &[("USER", "Arthur")],
+    );
+    let v = gate_envelope(&out);
+    assert_eq!(v["ok"], true, "{v}");
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(ctx.contains("Cronômetros abertos de arthur:"), "{ctx}");
+    assert!(ctx.contains(&path), "{ctx}");
+}
+
+#[test]
+fn gate_sem_pessoa_omite_cronometros() {
+    let f = fixture("tgs", Some("{}"));
+    let out = f.run_stdin(
+        &["tasks", "gate", "--agent", "claude"],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(!ctx.contains("Cronômetros abertos"), "{ctx}");
+}
+
+#[test]
+fn gate_nunca_falha_com_stdin_invalido() {
+    let f = fixture("tgf", Some("{}"));
+    let cases: [&[u8]; 5] = [
+        b"",
+        b"isto nao e json",
+        b"\xEF\xBB\xBF{\"session_id\":\"abc\"}",
+        b"\xEF\xBB\xBF{invalido",
+        b"[1,2,3]",
+    ];
+    for stdin in cases {
+        let out = f.run_stdin(
+            &["tasks", "gate", "--agent", "claude"],
+            stdin,
+            &[("USER", "ninguem")],
+        );
+        let v = gate_envelope(&out);
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(
+            v["hookSpecificOutput"]["hookEventName"], "SessionStart",
+            "{v}"
+        );
+        assert!(
+            v["hookSpecificOutput"]["additionalContext"].is_string(),
+            "{v}"
+        );
+    }
+}

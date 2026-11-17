@@ -296,7 +296,7 @@ fn invalid_stored_time() -> TaskError {
 
 /// Parses `YYYY-MM-DDTHH:MM[:SS[.fff]][Z|±HH:MM]` into milliseconds since the Unix
 /// epoch. Without an offset the time is taken as UTC.
-fn parse_instant(s: &str) -> Option<i64> {
+pub fn parse_instant(s: &str) -> Option<i64> {
     let (date, rest) = s.split_once('T')?;
     let mut parts = date.split('-');
     let year = digits(parts.next()?, 4)?;

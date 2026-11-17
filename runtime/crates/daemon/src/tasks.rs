@@ -10,15 +10,16 @@
 //! `{"ok":false,"error":CODE,"message":...}` on failure, exit 1.
 
 use std::collections::HashSet;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
 use mdbn_tasks::{
     Binding, NewTask, OpenEntry, ProjectItem, ProjectsSummary, ReviewItem, TaskError, TaskView,
-    TasksConfig, filter_queue_by_owner, is_project_path, list_projects, project_assign,
-    project_milestone, project_name, project_rename_status, project_review, project_status,
-    projects_summary,
+    TasksConfig, filter_queue_by_owner, is_project_path, list_projects, parse_instant,
+    project_assign, project_milestone, project_name, project_rename_status, project_review,
+    project_status, projects_summary, resolve_person,
 };
 use mdbn_wire::Wire;
 use mdbn_wire::cbor::Cbor;
@@ -217,6 +218,19 @@ pub(crate) enum TasksCmd {
     /// Project notes: status, owner, next milestone and review.
     #[command(subcommand)]
     Projects(ProjectsCmd),
+    /// The SessionStart hook: prints the gate's context in the host's envelope on
+    /// stdout. Reads the hook payload from stdin; always exits 0.
+    Gate {
+        #[command(flatten)]
+        target: Target,
+        /// The host whose envelope is printed.
+        #[arg(long, value_parser = ["claude", "omp", "codex"])]
+        agent: String,
+        /// The person whose open timers the context lists (name or alias). Without
+        /// it, the `people` key equal to `USER` (lowercased), if any.
+        #[arg(long, value_name = "P")]
+        responsavel: Option<String>,
+    },
 }
 
 /// `projects` subcommands.
@@ -354,6 +368,15 @@ pub(crate) struct TaskWrite {
 
 /// Runs a task command and prints its result.
 pub(crate) async fn run(cmd: TasksCmd, profile: &Profile, json: bool) -> ExitCode {
+    // The gate prints its own envelope, whatever `--json` says.
+    if let TasksCmd::Gate {
+        target,
+        agent,
+        responsavel,
+    } = &cmd
+    {
+        return gate(target, profile, agent, responsavel.as_deref()).await;
+    }
     match execute(cmd, profile).await {
         Ok(result) => {
             if json {
@@ -654,6 +677,10 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             s.write(&path, vec![op], write.if_revision.as_deref()).await
         }
         TasksCmd::Projects(cmd) => execute_projects(cmd, profile).await,
+        TasksCmd::Gate { .. } => Err(Failure::new(
+            "internal",
+            "the gate prints its own envelope; it does not run through execute",
+        )),
         TasksCmd::Timer(TimerCmd::Status {
             target,
             responsavel,
@@ -1304,6 +1331,182 @@ fn op_path(op: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+/// Who the gate speaks for: `--responsavel`, else the `people` key that `USER`
+/// names (lowercased). The links are `None` when the name does not resolve, which
+/// leaves the timers section out.
+fn gate_person(
+    config: &TasksConfig,
+    responsavel: Option<&str>,
+) -> Option<(String, Option<Vec<String>>)> {
+    match responsavel {
+        Some(who) => Some((who.to_string(), resolve_person(config, who).ok())),
+        None => {
+            let user = std::env::var("USER").ok()?.to_lowercase();
+            let links = config.people.get(&user)?.clone();
+            Some((user, Some(links)))
+        }
+    }
+}
+
+/// The open timers of the people `links` stand for, and the clock they were read at.
+struct GateTimers {
+    /// Task path and stored start of each open entry.
+    open: Vec<(String, String)>,
+    now: String,
+    /// The local clock could not be read: the times are UTC.
+    utc: bool,
+}
+
+async fn gate_timers(
+    target: &Target,
+    profile: &Profile,
+    links: &[String],
+) -> Result<GateTimers, Failure> {
+    let mut s = Session::open(target, profile, true).await?;
+    let now = s.now()?.to_string();
+    let utc = s.clock_ref()?.utc;
+    let mut open = Vec::new();
+    for record in all_records(&mut s.t, &[TASK_TYPE]).await? {
+        let view = view_of(&record);
+        for OpenEntry { person, start } in mdbn_tasks::open_entries(&s.binding, &view) {
+            if links
+                .iter()
+                .any(|link| strip_link(link) == strip_link(&person))
+            {
+                open.push((view.path.clone(), start));
+            }
+        }
+    }
+    Ok(GateTimers { open, now, utc })
+}
+
+/// How long a timer has been open, as `N min` or `H h MM min`.
+fn elapsed_text(start: &str, now: &str) -> String {
+    let (Some(start), Some(now)) = (parse_instant(start), parse_instant(now)) else {
+        return "tempo desconhecido".to_string();
+    };
+    let minutes = (now - start).max(0) / 60_000;
+    if minutes >= 60 {
+        format!("{} h {:02} min", minutes / 60, minutes % 60)
+    } else {
+        format!("{minutes} min")
+    }
+}
+
+/// The timers section: the person's open timers, last in the context.
+fn render_timers(name: &str, timers: &GateTimers) -> String {
+    let mut lines = Vec::new();
+    if timers.open.is_empty() {
+        lines.push(format!("Cronômetros abertos de {name}: nenhum."));
+    } else {
+        lines.push(format!("Cronômetros abertos de {name}:"));
+        for (path, start) in &timers.open {
+            lines.push(format!(
+                "- {path} (aberto desde {start}, há {})",
+                elapsed_text(start, &timers.now)
+            ));
+        }
+    }
+    if timers.utc {
+        lines.push("Horários em UTC: o relógio local não pôde ser lido.".to_string());
+    }
+    lines.join("\n")
+}
+
+/// The timers section, or the reason it could not be read. Never fails.
+async fn timers_section(
+    target: &Target,
+    profile: &Profile,
+    name: &str,
+    links: &[String],
+) -> String {
+    match gate_timers(target, profile, links).await {
+        Ok(timers) => render_timers(name, &timers),
+        Err(f) => format!(
+            "Cronômetros abertos de {name}: não consultados ({}).",
+            f.code
+        ),
+    }
+}
+
+/// The collection folder as an absolute path, the value `-C` takes in the context.
+async fn gate_root(target: &Target, profile: &Profile) -> Result<PathBuf, Failure> {
+    let root = folder_of(target, profile).await?;
+    std::path::absolute(&root)
+        .map_err(|e| Failure::new("internal", format!("{}: {e}", root.display())))
+}
+
+/// The full context: the rules, the commands for the person, then the timers.
+async fn gate_context(
+    target: &Target,
+    profile: &Profile,
+    responsavel: Option<&str>,
+) -> Result<String, Failure> {
+    let root = gate_root(target, profile).await?;
+    let config = read_config(&root)?.unwrap_or_default();
+    let person = gate_person(&config, responsavel);
+    let p = person.as_ref().map_or("<p>", |(name, _)| name.as_str());
+    let raw = root.display().to_string();
+    let c = if raw.contains(char::is_whitespace) {
+        format!("\"{raw}\"")
+    } else {
+        raw.clone()
+    };
+    let mut parts = vec![
+        format!("Gate TaskNotes obrigatório na coleção {raw}. Esta sessão não tem tarefa vinculada."),
+        "Reclassifique a intenção a cada mensagem: o pedido em curso tem execução? Se tem, existe um artefato durável — briefing, design, especificação, plano ou tarefa direta — que a represente? O ciclo é detectar a intenção de execução, materializar o artefato durável, promover a nota a tarefa, iniciar o cronômetro, concluir a fase e avançar para o artefato seguinte.".to_string(),
+        "Plan Mode e update_plan são camada efêmera da sessão: não criam tarefa por si sós e não substituem o artefato durável.".to_string(),
+        "Fase terminada é encerrada com --status concluido antes de a seguinte ser rastreada, para não haver duas tarefas simultâneas representando a mesma feature.".to_string(),
+        format!("Listar: mdbase tasks list --responsavel {p} -C {c}"),
+        format!("Criar: mdbase tasks create \"TÍTULO\" --responsavel {p} --marca MARCA --projeto PROJETO -C {c}"),
+        format!("Promover uma nota com execução: mdbase tasks promote \"CAMINHO_EXATO\" --responsavel {p} --marca Madame_Labs --projeto PROJETO -C {c}"),
+        format!("Iniciar: mdbase tasks start \"CAMINHO_EXATO\" --responsavel {p} -C {c}"),
+        format!("A pessoa usuária pode dispensar tarefa e cronômetro explicitamente; nunca escolher ou criar silenciosamente. Use somente o mdbase tasks. O cronômetro acompanha a tarefa, não a resposta: não pare ao fim de cada resposta, só no desfecho da tarefa (confirmação, troca de assunto ou encerramento). No desfecho, o agente decide o status a partir do contexto; só pergunte diante de ambiguidade material. mdbase tasks stop exige --status: aprovacao (terminou e precisa de conferência), concluido (verificável sozinho, ou já confirmado), cancelado (abandonado) ou pausa (só stand-by real). Encerrar: mdbase tasks stop \"CAMINHO_EXATO\" --responsavel {p} --status <status> -C {c}"),
+    ];
+    if let Some((name, Some(links))) = &person {
+        parts.push(timers_section(target, profile, name, links).await);
+    }
+    Ok(parts.join("\n\n"))
+}
+
+/// The context when the full one cannot be built: the rules, and the reason.
+fn minimal_context(f: &Failure) -> String {
+    format!(
+        "Gate TaskNotes obrigatório. Esta sessão não tem tarefa vinculada. O contexto completo não pôde ser montado ({}): {}. Use mdbase tasks list, create, promote, start e stop; o cronômetro acompanha a tarefa, não a resposta, e stop exige --status (aprovacao, concluido, cancelado ou pausa).",
+        f.code, f.message
+    )
+}
+
+/// The host's SessionStart envelope. Codex takes no `ok`.
+fn gate_envelope(agent: &str, context: &str) -> Value {
+    let hook = json!({"hookEventName": "SessionStart", "additionalContext": context});
+    if agent == "codex" {
+        json!({"hookSpecificOutput": hook})
+    } else {
+        json!({"ok": true, "hookSpecificOutput": hook})
+    }
+}
+
+/// The SessionStart hook. The payload is read and dropped: a session has no binding
+/// and no lease, so nothing in it is needed. Prints one envelope and returns success
+/// in every case.
+async fn gate(
+    target: &Target,
+    profile: &Profile,
+    agent: &str,
+    responsavel: Option<&str>,
+) -> ExitCode {
+    if !std::io::stdin().is_terminal() {
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+    }
+    let context = match gate_context(target, profile, responsavel).await {
+        Ok(text) => text,
+        Err(f) => minimal_context(&f),
+    };
+    println!("{}", gate_envelope(agent, &context));
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
