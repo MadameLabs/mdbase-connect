@@ -1150,7 +1150,15 @@ fn promote_documento_tipado_aparece_no_list() {
         "---\ntype: plano\ntags: [ideia]\ntitle: \"Ideia\"\ndateCreated: \"2026-11-01T09:00:00.000-03:00\"\n---\nCorpo.\n",
     )
     .unwrap();
+    // A note without dateCreated: its `data` date becomes the creation date.
+    std::fs::write(
+        f.root.join("01-planejamento/Sem data.md"),
+        "---\ntype: plano\ntags: [ideia]\ntitle: \"Sem data\"\ndata: '2026-11-14'\n---\nCorpo.\n",
+    )
+    .unwrap();
     let (code, v) = f.json(&["tasks", "promote", "01-planejamento/Ideia.md"]);
+    assert_eq!(code, 0, "{v}");
+    let (code, v) = f.json(&["tasks", "promote", "01-planejamento/Sem data.md"]);
     assert_eq!(code, 0, "{v}");
     let (code, v) = f.json(&["tasks", "list"]);
     assert_eq!(code, 0, "{v}");
@@ -1161,5 +1169,10 @@ fn promote_documento_tipado_aparece_no_list() {
         .filter_map(|r| r["path"].as_str())
         .collect();
     assert!(paths.contains(&"01-planejamento/Ideia.md"), "{v}");
+    assert!(paths.contains(&"01-planejamento/Sem data.md"), "{v}");
     assert!(f.read("01-planejamento/Ideia.md").contains("type: plano"));
+    assert!(
+        f.read("01-planejamento/Sem data.md")
+            .contains("dateCreated: \"2026-11-14T00:00:00Z\"")
+    );
 }

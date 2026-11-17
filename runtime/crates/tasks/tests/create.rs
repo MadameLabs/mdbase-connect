@@ -42,6 +42,8 @@ fn campos(op: &Value) -> &Map<String, Value> {
     op["fields"].as_object().expect("fields object")
 }
 
+const AGORA: &str = "2026-11-17T10:00:00.000-03:00";
+
 #[test]
 fn caminho_vem_do_tipo() {
     let b = binding();
@@ -119,7 +121,7 @@ fn promover_acrescenta_task_sem_perder_tags() {
     let b = binding();
     let n = nova("Ideia");
     let t = nota(json!({"tags": ["ideia"]}));
-    let op = promote(&b, &TasksConfig::default(), &t, &n).expect("promotes");
+    let op = promote(&b, &TasksConfig::default(), &t, &n, AGORA).expect("promotes");
     assert_eq!(op["op"], json!("update"));
     assert_eq!(op["path"], json!("01-planejamento/Ideia.md"));
     assert_eq!(op["if_revision"], json!("rev-1"));
@@ -195,7 +197,7 @@ fn criar_recusa_titulo_vazio() {
 fn promover_nao_duplica_task() {
     let b = binding();
     let t = nota(json!({"tags": ["task", "ideia"]}));
-    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("promotes");
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
     assert_eq!(campos(&op).get("tags"), Some(&json!(["task", "ideia"])));
 }
 
@@ -210,7 +212,7 @@ fn promover_mantem_pessoas_e_projetos_da_nota() {
         brand: None,
         projects: vec!["Projeto".to_string(), "Outro".to_string()],
     };
-    let op = promote(&b, &c, &t, &n).expect("promotes");
+    let op = promote(&b, &c, &t, &n, AGORA).expect("promotes");
     assert_eq!(
         campos(&op).get("assignees"),
         Some(&json!(["[[Mayara Almeida]]", "[[Arthur Cardoso]]"]))
@@ -225,7 +227,8 @@ fn promover_mantem_pessoas_e_projetos_da_nota() {
 fn promover_exige_os_obrigatorios_da_config() {
     let b = binding();
     let c = config(json!({"required_on_create": ["assignees"]}));
-    let err = promote(&b, &c, &nota(json!({})), &nova("Ideia")).expect_err("assignees required");
+    let err =
+        promote(&b, &c, &nota(json!({})), &nova("Ideia"), AGORA).expect_err("assignees required");
     assert_eq!(err.code, "missing_required_field");
     assert!(err.message.contains("assignees"), "{}", err.message);
 }
@@ -243,7 +246,7 @@ fn promover_recusa_responsavel_antigo() {
         brand: None,
         projects: Vec::new(),
     };
-    let err = promote(&b, &c, &nota(json!({})), &n).expect_err("refused");
+    let err = promote(&b, &c, &nota(json!({})), &n, AGORA).expect_err("refused");
     assert_eq!(err.code, "responsavel_antigo");
 }
 
@@ -251,7 +254,7 @@ fn promover_recusa_responsavel_antigo() {
 fn promover_documento_tipado_acrescenta_task_em_types() {
     let b = binding();
     let t = nota(json!({"type": "plano", "tags": ["ideia"]}));
-    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("promotes");
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
     assert_eq!(campos(&op).get("types"), Some(&json!(["plano", "task"])));
     assert_eq!(campos(&op).get("tags"), Some(&json!(["ideia", "task"])));
 }
@@ -260,7 +263,7 @@ fn promover_documento_tipado_acrescenta_task_em_types() {
 fn promover_mantem_o_campo_type() {
     let b = binding();
     let t = nota(json!({"type": "plano", "tags": ["ideia"]}));
-    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("promotes");
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
     assert!(!campos(&op).contains_key("type"), "{:?}", campos(&op));
 }
 
@@ -268,14 +271,14 @@ fn promover_mantem_o_campo_type() {
 fn promover_types_existente_acrescenta_task() {
     let b = binding();
     let t = nota(json!({"types": ["plano", "briefing"], "tags": ["ideia"]}));
-    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("promotes");
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
     assert_eq!(
         campos(&op).get("types"),
         Some(&json!(["plano", "briefing", "task"]))
     );
 
     let ja = nota(json!({"types": ["plano", "task"], "tags": ["task"]}));
-    let op = promote(&b, &TasksConfig::default(), &ja, &nova("Ideia")).expect("promotes");
+    let op = promote(&b, &TasksConfig::default(), &ja, &nova("Ideia"), AGORA).expect("promotes");
     assert!(!campos(&op).contains_key("types"), "{:?}", campos(&op));
 }
 
@@ -291,6 +294,7 @@ fn promover_sem_tipo_ou_com_type_task_nao_grava_types() {
             &TasksConfig::default(),
             &nota(frontmatter),
             &nova("Ideia"),
+            AGORA,
         )
         .expect("promotes");
         assert!(!campos(&op).contains_key("types"), "{:?}", campos(&op));
@@ -301,7 +305,59 @@ fn promover_sem_tipo_ou_com_type_task_nao_grava_types() {
 fn reparo_de_tarefa_ja_promovida_mantem_status() {
     let b = binding();
     let t = nota(json!({"tags": ["task"], "status": "em-andamento"}));
-    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia")).expect("repairs");
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("repairs");
     assert!(!campos(&op).contains_key("status"), "{:?}", campos(&op));
     assert_eq!(campos(&op).get("tags"), Some(&json!(["task"])));
+}
+
+fn nota_tipada(frontmatter: Value) -> TaskView {
+    let mut t = nota(frontmatter);
+    t.frontmatter.insert("tags".to_string(), json!(["ideia"]));
+    t
+}
+
+#[test]
+fn promover_sem_data_de_criacao_usa_created() {
+    let b = binding();
+    let t = nota_tipada(json!({"type": "plano", "created": "2026-11-16", "data": "2026-11-14"}));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
+    assert_eq!(
+        campos(&op).get("dateCreated"),
+        Some(&json!("2026-11-16T00:00:00Z"))
+    );
+}
+
+#[test]
+fn promover_sem_data_de_criacao_usa_data() {
+    let b = binding();
+    let t = nota_tipada(json!({"type": "plano", "data": "2026-11-14"}));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
+    assert_eq!(
+        campos(&op).get("dateCreated"),
+        Some(&json!("2026-11-14T00:00:00Z"))
+    );
+}
+
+#[test]
+fn promover_sem_data_de_criacao_usa_agora() {
+    let b = binding();
+    let t = nota_tipada(json!({"type": "plano"}));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
+    assert_eq!(campos(&op).get("dateCreated"), Some(&json!(AGORA)));
+}
+
+#[test]
+fn promover_nao_sobrescreve_data_de_criacao() {
+    let b = binding();
+    let t = nota_tipada(json!({
+        "type": "plano",
+        "dateCreated": "2026-01-01T09:00:00.000-03:00",
+        "created": "2026-11-16"
+    }));
+    let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
+    assert!(
+        !campos(&op).contains_key("dateCreated"),
+        "{:?}",
+        campos(&op)
+    );
 }

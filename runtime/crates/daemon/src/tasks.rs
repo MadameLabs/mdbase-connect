@@ -575,7 +575,7 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             projeto,
             write,
         } => {
-            let mut s = Session::open(&target, profile, false).await?;
+            let mut s = Session::open(&target, profile, true).await?;
             let note = s.view(&path).await?;
             let new = NewTask {
                 title: String::new(),
@@ -583,7 +583,8 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
                 brand: marca,
                 projects: projeto,
             };
-            let op = mdbn_tasks::promote(&s.binding, &s.config(), &note, &new)?;
+            let now = s.now()?.to_string();
+            let op = mdbn_tasks::promote(&s.binding, &s.config(), &note, &new, &now)?;
             s.check_op_people(&op).await?;
             s.write(&path, vec![op], write.if_revision.as_deref()).await
         }

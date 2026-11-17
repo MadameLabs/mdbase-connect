@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::plan::{check_status, list_of, update};
+use crate::plan::{check_status, is_date, list_of, update};
 use crate::{Binding, TaskError, TaskView, TasksConfig, wikilink};
 
 /// Tag that makes a note a task; the type's `where` rule matches on it.
@@ -20,6 +20,11 @@ const TASK_TAG: &str = "task";
 const TYPE_KEY: &str = "type";
 /// Frontmatter key of the list of types of a note.
 const TYPES_KEY: &str = "types";
+/// Frontmatter key of a date-only creation date, read when `dateCreated` is missing.
+const CREATED_KEY: &str = "created";
+/// Frontmatter key of a date-only date, read when neither `dateCreated` nor
+/// `created` is set.
+const DATA_KEY: &str = "data";
 /// Placeholder in the type's filename template.
 const TITLE_PLACEHOLDER: &str = "{{title}}";
 /// Characters the TaskNotes filename sanitizer removes (not replaces).
@@ -84,6 +89,10 @@ pub fn create(b: &Binding, c: &TasksConfig, n: &NewTask) -> Result<Value, TaskEr
 /// is never rewritten. The write carries the note's revision. The title is not
 /// changed.
 ///
+/// A note without a creation date (`dateCreated`) gets one: from its `created`
+/// field, else its `data` field (a date becomes midnight UTC), else `now`, the
+/// caller's clock as a date-time. An existing `dateCreated` is never overwritten.
+///
 /// A note that already carries the `task` tag is repaired, not restarted: its
 /// status is kept as written and only what is missing is filled in.
 pub fn promote(
@@ -91,10 +100,15 @@ pub fn promote(
     c: &TasksConfig,
     note: &TaskView,
     n: &NewTask,
+    now: &str,
 ) -> Result<Value, TaskError> {
     let mut fields = Map::new();
     if !has_task_tag(b, note) {
         fields.insert(b.field("status").to_string(), json!(initial_status(b, c)?));
+    }
+    let created = b.field("dateCreated");
+    if !filled(note.frontmatter.get(created)) {
+        fields.insert(created.to_string(), json!(creation_date(note, now)));
     }
     fields.insert(
         b.field("tags").to_string(),
@@ -117,6 +131,24 @@ pub fn promote(
 
     require(c, &fields, &note.frontmatter)?;
     Ok(update(note, fields))
+}
+
+/// The creation date for a note that has none: `created`, else `data`, else `now`.
+/// A date-only value becomes midnight UTC, since the type's `dateCreated` takes a
+/// date-time; a value that already has a time is used as written.
+fn creation_date(note: &TaskView, now: &str) -> String {
+    [CREATED_KEY, DATA_KEY]
+        .iter()
+        .find_map(|key| as_date_time(note.frontmatter.get(*key)))
+        .unwrap_or_else(|| now.to_string())
+}
+
+fn as_date_time(value: Option<&Value>) -> Option<String> {
+    let text = value?.as_str()?.trim();
+    if is_date(text) {
+        return Some(format!("{text}T00:00:00Z"));
+    }
+    text.contains('T').then(|| text.to_string())
 }
 
 fn has_task_tag(b: &Binding, note: &TaskView) -> bool {

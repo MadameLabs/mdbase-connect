@@ -335,6 +335,6 @@ fn item_name(item: &Value) -> String {
 }
 
 /// A `YYYY-MM-DD` date that exists on the calendar.
-fn is_date(s: &str) -> bool {
+pub(crate) fn is_date(s: &str) -> bool {
     crate::temporal::calendar_date(s).is_some()
 }
