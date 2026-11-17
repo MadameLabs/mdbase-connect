@@ -118,8 +118,10 @@ if [[ ! -f $DESTINO/.env.db ]]; then
 fi
 
 # Sub-rede no isolamento: conferida nas regras CARREGADAS, não no arquivo.
-nft get element $NFT_TABELA $NFT_SET "{ $IP_NFT_TESTE }" >/dev/null 2>&1 \
-  || falha "$IP_NFT_TESTE não está no set $NFT_SET carregado ($NFT_TABELA). Ficha de isolamento antes (LEIA-ME.md, passo 2)"
+# ISOLADAS é um `define` do laboratorio-rede.nft (não um set nomeado), então o
+# nft já expande a faixa dentro das regras: basta procurá-la na tabela ativa.
+nft list table $NFT_TABELA 2>/dev/null | grep -qF '172.31.249.0/24' \
+  || falha "172.31.249.0/24 não está nas regras carregadas de $NFT_TABELA. Ficha de isolamento antes (LEIA-ME.md, passo 2)"
 
 if ! docker network inspect "${PROJETO}_next" >/dev/null 2>&1; then
   usadas=$(docker network ls -q | xargs -r docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | grep -c '172\.31\.249\.' || true)

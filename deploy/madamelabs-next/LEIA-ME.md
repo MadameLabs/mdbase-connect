@@ -57,7 +57,7 @@ sudo cp -p /etc/nftables/laboratorio-rede.nft /etc/nftables/laboratorio-rede.nft
 sudoedit /etc/nftables/laboratorio-rede.nft     # incluir 172.31.249.0/24 em ISOLADAS, no mesmo formato das outras
 sudo nft -c -f /etc/nftables/laboratorio-rede.nft   # só checa a sintaxe
 sudo systemctl restart laboratorio-rede.service
-sudo nft get element ip laboratorio ISOLADAS '{ 172.31.249.10 }'   # tem de devolver o elemento
+sudo nft list table ip laboratorio | grep -F 172.31.249.0/24   # ISOLADAS é um define: a faixa aparece expandida nas regras
 ```
 
 Antes do restart, confirmar com `sudo head -20 /etc/nftables/laboratorio-rede.nft` que o arquivo limpa a tabela antes de recarregar (senão o restart soma regras). Não usar `firewall-cmd --direct`.
