@@ -1,7 +1,11 @@
 # Pilha "mdbase next" do mdbaselabs no Labs (projeto Compose mdbase-next).
 # Instalada em /opt/mdbase-next pelo instalar.sh (root, pelo Doctor Labs).
-# Segredos vêm do .env dessa pasta (0600), gerado pelo instalar.sh. Nenhum valor real fica aqui.
-# Imagens são carregadas com docker load (não há build no Labs).
+# Segredos ficam em três arquivos 0600 ao lado deste (gerados pelo instalar.sh):
+#   .env.db       senha do Postgres (só o next-db recebe)
+#   .env.servidor variáveis do servidor + DATABASE_URL (servidor e migração; nunca LOGSVC_*)
+#   .env.log      LOGSVC_* + LOGSVC_PG_URL (só o log; nunca variáveis do servidor)
+# Cada env_file é required: false para que "docker compose down" funcione sem eles.
+# Nenhum valor real fica neste arquivo. Imagens são carregadas com docker load (sem build no Labs).
 name: mdbase-next
 
 x-server-image: &server-image
@@ -15,11 +19,14 @@ x-tls-env: &tls-env
 
 services:
   next-db:
-    image: postgres:17-alpine
+    # postgres:17-alpine fixado por digest (obtido com docker pull + docker inspect em 2026-11-17).
+    image: postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
+    env_file:
+      - path: ./.env.db
+        required: false
     environment:
       POSTGRES_DB: mdbase_next
       POSTGRES_USER: mdbase_next
-      POSTGRES_PASSWORD: ${NEXT_DATABASE_PASSWORD:?defina NEXT_DATABASE_PASSWORD no .env}
     command:
       - postgres
       - -c
@@ -48,10 +55,12 @@ services:
 
   next-migrate:
     <<: *server-image
+    env_file:
+      - path: ./.env.servidor
+        required: false
     command: ["node", "services/server/dist/migrate.js"]
     environment:
       <<: *tls-env
-      DATABASE_URL: postgres://mdbase_next:${NEXT_DATABASE_PASSWORD}@next-db:5432/mdbase_next?sslmode=verify-full
     volumes:
       - next-tls:/tls:ro
     networks:
@@ -72,7 +81,8 @@ services:
   next-server:
     <<: *server-image
     env_file:
-      - .env
+      - path: ./.env.servidor
+        required: false
     environment:
       <<: *tls-env
       NODE_ENV: production
@@ -85,10 +95,9 @@ services:
       MDBASE_CONNECT_IDENTITY_ISSUER: https://next.madamelabs.com.br
       MDBASE_NEXT_CONTROL_PLANE: "1"
       MDBASE_NEW_ACCOUNT_BACKEND: next
-      MDBASE_CONNECT_REGISTRATION: ${NEXT_REGISTRATION_MODE:-closed}
+      MDBASE_CONNECT_REGISTRATION: closed
       MDBASE_CONNECT_TRUST_PROXY: "1"
       MDBASE_NEXT_LOG_SERVICE_URL: https://next-log.madamelabs.com.br
-      DATABASE_URL: postgres://mdbase_next:${NEXT_DATABASE_PASSWORD}@next-db:5432/mdbase_next?sslmode=verify-full
     ports:
       - "127.0.0.1:8800:8787"
     volumes:
@@ -116,17 +125,16 @@ services:
 
   next-log:
     <<: *log-image
+    env_file:
+      - path: ./.env.log
+        required: false
     environment:
       <<: *tls-env
       LOGSVC_LISTEN: 0.0.0.0:10000
       LOGSVC_BACKEND: pg
-      LOGSVC_PG_URL: postgres://mdbase_next:${NEXT_DATABASE_PASSWORD}@next-db:5432/mdbase_next_log?sslmode=verify-full
       LOGSVC_PG_CA_FILE: /tls/ca.crt
       LOGSVC_OBJECTS_DIR: /var/lib/logsvc/objects
       LOGSVC_PUBLIC_BASE: https://next-log.madamelabs.com.br
-      LOGSVC_ROOT_KEYS: ${LOGSVC_ROOT_KEYS:?defina LOGSVC_ROOT_KEYS no .env}
-      LOGSVC_TOKEN_ISSUERS: ${LOGSVC_TOKEN_ISSUERS:?defina LOGSVC_TOKEN_ISSUERS no .env}
-      LOGSVC_URL_SECRET: ${LOGSVC_URL_SECRET:?defina LOGSVC_URL_SECRET no .env}
     ports:
       - "127.0.0.1:8801:10000"
     volumes:
