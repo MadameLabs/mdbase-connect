@@ -11,12 +11,14 @@
 mod binding;
 mod config;
 mod plan;
+mod timer;
 
 pub use binding::Binding;
 pub use config::TasksConfig;
 pub use plan::{
     TaskView, archive, block, is_open, link_projects, set_status, skip, unblock, unskip, wikilink,
 };
+pub use timer::{OpenEntry, PERSON_PREFIX, open_entries, retime, start, stop};
 
 /// An error with a stable machine code and a human message.
 #[derive(Debug, Clone, PartialEq, Eq)]

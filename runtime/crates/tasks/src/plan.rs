@@ -35,12 +35,18 @@ pub fn set_status(
     completed_date: Option<&str>,
     today: &str,
 ) -> Result<Value, TaskError> {
-    if !b.statuses.iter().any(|s| s == status) {
-        return Err(TaskError::new(
-            "invalid_status",
-            format!("status {status} is not in the task type"),
-        ));
-    }
+    Ok(update(t, status_fields(b, status, completed_date, today)?))
+}
+
+/// The status fields of a write: the status, plus `completedDate` when the status
+/// closes the task. Shared by `set_status` and the timer, so both close alike.
+pub(crate) fn status_fields(
+    b: &Binding,
+    status: &str,
+    completed_date: Option<&str>,
+    today: &str,
+) -> Result<Map<String, Value>, TaskError> {
+    check_status(b, status)?;
     let mut fields = Map::new();
     fields.insert(b.field("status").to_string(), json!(status));
 
@@ -71,7 +77,18 @@ pub fn set_status(
         }
         None => {}
     }
-    Ok(update(t, fields))
+    Ok(fields)
+}
+
+/// Refuses a status the task type does not allow.
+pub(crate) fn check_status(b: &Binding, status: &str) -> Result<(), TaskError> {
+    if !b.statuses.iter().any(|s| s == status) {
+        return Err(TaskError::new(
+            "invalid_status",
+            format!("status {status} is not in the task type"),
+        ));
+    }
+    Ok(())
 }
 
 /// Plans the project list of a task: the given projects replace the list, as
@@ -222,7 +239,7 @@ pub fn wikilink(s: &str) -> String {
     format!("[[{}]]", note_name(trimmed))
 }
 
-fn update(t: &TaskView, fields: Map<String, Value>) -> Value {
+pub(crate) fn update(t: &TaskView, fields: Map<String, Value>) -> Value {
     json!({
         "op": "update",
         "path": t.path,
@@ -233,7 +250,7 @@ fn update(t: &TaskView, fields: Map<String, Value>) -> Value {
 
 /// The list stored under `key`. A plain string counts as a one-item list, so a
 /// note written as `tags: task` keeps its tag; a missing key is an empty list.
-fn list_of(t: &TaskView, key: &str) -> Vec<Value> {
+pub(crate) fn list_of(t: &TaskView, key: &str) -> Vec<Value> {
     match t.frontmatter.get(key) {
         Some(Value::Array(items)) => items.clone(),
         Some(Value::String(s)) => vec![Value::String(s.clone())],
