@@ -25,7 +25,20 @@ HOST_PORTAL=next.madamelabs.com.br
 HOST_LOG=next-log.madamelabs.com.br
 PORTA_SERVER=8800
 PORTA_LOG=8801
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Arquivos auxiliares: pelo Doctor, vão como argumentos (ele só leva ao preparo, e ao
+# Toxy, o que está no argv, com o nome trocado para <n>-<nome>); sem argumentos, vêm da
+# pasta do script (uso manual com sudo).
+declare -A AUX=()
+AUX_NOMES=(compose.yml backup.sh desfazer.sh mdbase-next-backup.service mdbase-next-backup.timer isolada.py)
+for a in "$@"; do
+  b=$(basename "$a"); b=${b#[0-9]-}; b=${b#[0-9][0-9]-}
+  [[ " ${AUX_NOMES[*]} " == *" $b "* ]] || { echo "FALHOU: argumento inesperado: $a" >&2; exit 1; }
+  AUX[$b]=$a
+done
+if [[ $# -eq 0 ]]; then
+  SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for b in "${AUX_NOMES[@]}"; do AUX[$b]=$SRC_DIR/$b; done
+fi
 
 CFG_MUDOU=0
 CONCLUIDO=0
@@ -97,8 +110,8 @@ trap limpar EXIT
 for c in docker openssl sha256sum gunzip curl cloudflared systemctl awk nft df python3; do
   command -v "$c" >/dev/null || falha "comando ausente: $c"
 done
-for arq in compose.yml backup.sh desfazer.sh mdbase-next-backup.service mdbase-next-backup.timer; do
-  [[ -f $SRC_DIR/$arq ]] || falha "arquivo ausente ao lado do instalar.sh: $arq"
+for arq in "${AUX_NOMES[@]}"; do
+  [[ -n ${AUX[$arq]:-} && -f ${AUX[$arq]} ]] || falha "arquivo auxiliar ausente: $arq (passe todos como argumento; LEIA-ME.md, ficha 4)"
 done
 [[ -f $ORIGEM/imagens/$SERVER_TAR && -f $ORIGEM/imagens/$LOG_TAR ]] || falha "imagens ausentes em $ORIGEM/imagens"
 [[ -f $CFG ]] || falha "$CFG não existe"
@@ -121,7 +134,7 @@ fi
 # ISOLADAS é um `define` do laboratorio-rede.nft (não um set nomeado), então o
 # nft expande a faixa dentro das regras e, ao listar, funde faixas vizinhas:
 # isolada.py confere por cobertura, não por texto.
-nft list table $NFT_TABELA 2>/dev/null | python3 "$(dirname "$(readlink -f "$0")")/isolada.py" "$SUB_REDE" \
+nft list table $NFT_TABELA 2>/dev/null | python3 -I "${AUX[isolada.py]}" "$SUB_REDE" \
   || falha "172.31.249.0/24 não está nas regras carregadas de $NFT_TABELA. Ficha de isolamento antes (LEIA-ME.md, passo 2)"
 
 if ! docker network inspect "${PROJETO}_next" >/dev/null 2>&1; then
@@ -162,9 +175,9 @@ docker image inspect "$SERVER_IMG" "$LOG_IMG" >/dev/null
 log "imagens carregadas"
 
 # ---------------------------------------------------------------- 2. arquivos da pilha e segredos (0600, separados por serviço)
-install -m 0644 -o root -g root "$SRC_DIR/compose.yml" "$DESTINO/compose.yml"
-install -m 0700 -o root -g root "$SRC_DIR/backup.sh" "$DESTINO/backup.sh"
-install -m 0700 -o root -g root "$SRC_DIR/desfazer.sh" "$DESTINO/desfazer.sh"
+install -m 0644 -o root -g root "${AUX[compose.yml]}" "$DESTINO/compose.yml"
+install -m 0700 -o root -g root "${AUX[backup.sh]}" "$DESTINO/backup.sh"
+install -m 0700 -o root -g root "${AUX[desfazer.sh]}" "$DESTINO/desfazer.sh"
 
 if [[ ! -f $DESTINO/.env.db ]]; then
   PW=$(openssl rand -hex 24)
@@ -311,8 +324,8 @@ espera_http "https://$HOST_LOG/health" '^200$' 120
 CONCLUIDO=1
 
 # ---------------------------------------------------------------- 7. backup diário (timer)
-install -m 0644 -o root -g root "$SRC_DIR/mdbase-next-backup.service" /etc/systemd/system/mdbase-next-backup.service
-install -m 0644 -o root -g root "$SRC_DIR/mdbase-next-backup.timer" /etc/systemd/system/mdbase-next-backup.timer
+install -m 0644 -o root -g root "${AUX[mdbase-next-backup.service]}" /etc/systemd/system/mdbase-next-backup.service
+install -m 0644 -o root -g root "${AUX[mdbase-next-backup.timer]}" /etc/systemd/system/mdbase-next-backup.timer
 systemctl daemon-reload
 systemctl enable --now mdbase-next-backup.timer
 log "timer mdbase-next-backup ativo (22:50, horário local)"

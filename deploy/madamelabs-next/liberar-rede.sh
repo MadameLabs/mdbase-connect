@@ -2,10 +2,14 @@
 # Inclui 172.31.249.0/24 (rede da pilha mdbase-next) no define ISOLADAS do
 # /etc/nftables/laboratorio-rede.nft e recarrega o laboratorio-rede.service.
 # Roda como root, pelo Doctor. Idempotente. Em falha, volta o arquivo e recarrega.
+# Uso: bash liberar-rede.sh /home/mrlabs/mdbase-next/isolada.py
+# O isolada.py vai como argumento: o Doctor só leva ao preparo (e ao Toxy) o que está no argv.
 set -euo pipefail
 ARQ=/etc/nftables/laboratorio-rede.nft
 FAIXA=172.31.249.0/24
-ISOLADA="python3 $(dirname "$(readlink -f "$0")")/isolada.py"   # confere por cobertura: o nft funde faixas vizinhas ao listar
+ISOLADA_PY=${1:-$(dirname "$(readlink -f "$0")")/isolada.py}
+[ -f "$ISOLADA_PY" ] || { echo "isolada.py nao encontrado: $ISOLADA_PY" >&2; exit 1; }
+ISOLADA="python3 -I $ISOLADA_PY"   # confere por cobertura: o nft funde faixas vizinhas ao listar
 [ "$(id -u)" = 0 ] || { echo "precisa de root" >&2; exit 1; }
 if nft list table ip laboratorio 2>/dev/null | $ISOLADA "$FAIXA" 2>/dev/null; then echo "ja isolada: nada a fazer"; exit 0; fi
 grep -q '^define ISOLADAS = {' "$ARQ" || { echo "define ISOLADAS nao encontrado em $ARQ" >&2; exit 1; }

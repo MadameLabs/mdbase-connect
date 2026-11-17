@@ -52,7 +52,13 @@ Soma dos três que ficam de pé: 1152 MiB. O Connect atual soma cerca de 2 GiB; 
 
 **Ficha 1, sem root (pela pasta do `mrlabs`):** copiar o conteúdo de `deploy/madamelabs-next/` para `/home/mrlabs/mdbase-next/`, e colocar ali `imagens/` (os dois `.tar.gz` da Task 4, com `.sha256`), `servidor.env` e `log.env` (cópias da `mdbaselabs-segredos/`, modo 600). Rodar a verificação de hash acima.
 
-**Ficha 2, root: liberar a sub-rede no isolamento.** `instalar.sh` recusa rodar se `172.31.249.10` não estiver no set `ISOLADAS` carregado (`ip laboratorio`). O arquivo é `/etc/nftables/laboratorio-rede.nft`, carregado pelo `laboratorio-rede.service` (ver estado-atual-labs, Rede). Passos:
+**Ficha 2, root: liberar a sub-rede no isolamento.** `instalar.sh` recusa rodar se `172.31.249.10` não estiver no set `ISOLADAS` carregado (`ip laboratorio`). O arquivo é `/etc/nftables/laboratorio-rede.nft`, carregado pelo `laboratorio-rede.service` (ver estado-atual-labs, Rede). Pelo Doctor, num passo só, com volta automática:
+
+```sh
+doctor-pedir -- bash /home/mrlabs/mdbase-next/liberar-rede.sh /home/mrlabs/mdbase-next/isolada.py
+```
+
+O `isolada.py` vai como argumento porque o Doctor só leva ao preparo (e ao Toxy) os arquivos que aparecem no argv; o script roda de lá, não da pasta do `mrlabs`. À mão, os passos equivalentes:
 
 ```sh
 sudo cp -p /etc/nftables/laboratorio-rede.nft /etc/nftables/laboratorio-rede.nft.antes-mdbase-next
@@ -74,14 +80,20 @@ sudo rm -f /tmp/config-quebrado.yml
 
 Se der `rc=0`, parar: o validador não serve de guarda.
 
-**Ficha 4, root: instalação.** `sudo bash /home/mrlabs/mdbase-next/instalar.sh`. Ordem interna:
+**Ficha 4, root: instalação.** Pelo Doctor, com os arquivos auxiliares como argumentos (o Doctor só leva ao preparo e ao Toxy o que está no argv; sem argumentos o script os lê da própria pasta, para uso manual):
+
+```sh
+doctor-pedir -- bash /home/mrlabs/mdbase-next/instalar.sh /home/mrlabs/mdbase-next/compose.yml /home/mrlabs/mdbase-next/backup.sh /home/mrlabs/mdbase-next/desfazer.sh /home/mrlabs/mdbase-next/mdbase-next-backup.service /home/mrlabs/mdbase-next/mdbase-next-backup.timer /home/mrlabs/mdbase-next/isolada.py
+```
+
+Ordem interna:
 
 1. Pré-checagens, sem alterar nada: root; comandos; arquivos; variáveis (por nome) do Google, do servidor e do log; sub-rede no set carregado; sub-rede livre no Docker; 10 GiB livres em `/var/lib/docker`; validador rejeita config quebrado; `connect` e `chat` respondem. **Se o connect ou o chat não responderem, o script para antes de tocar no cloudflared e diz por quê.**
 2. sha256 fixado no script das duas imagens e `docker load`.
 3. `.env.db`, `.env.servidor`, `.env.log` (0600) e `backup.key` (0600).
 4. Certificado TLS do Postgres (autoassinado, SAN `next-db`, 10 anos) no volume `mdbase-next_next-tls`.
 5. Sobe `next-db`, cria o banco `mdbase_next_log`, ajusta o dono do volume de objetos, sobe `next-server` (o Compose roda `next-migrate` antes) e `next-log`. Espera `/ready` 200 em `8800` e `/health` 200 em `8801`.
-6. **CNAMEs antes do config.yml.** Para cada host sem regra: `cloudflared tunnel route dns <tunel> <host>`. Se o registro já existir, o script para e pede conferência manual: no painel da Cloudflare, o CNAME tem de apontar para `<tunel>.cfargotunnel.com`. Confirmado, rodar de novo com `sudo env CNAME_CONFERIDO=1 bash /home/mrlabs/mdbase-next/instalar.sh`. (`sudo VAR=valor` não serve: o sudo descarta variáveis fora da lista permitida sem SETENV; `env` é o comando e passa a variável.)
+6. **CNAMEs antes do config.yml.** Para cada host sem regra: `cloudflared tunnel route dns <tunel> <host>`. Se o registro já existir, o script para e pede conferência manual: no painel da Cloudflare, o CNAME tem de apontar para `<tunel>.cfargotunnel.com`. Confirmado, rodar de novo com `doctor-pedir -- env CNAME_CONFERIDO=1 bash /home/mrlabs/mdbase-next/instalar.sh <os mesmos argumentos>`. (`sudo VAR=valor` não serve: o sudo descarta variáveis fora da lista permitida sem SETENV; `env` é o comando e passa a variável.)
 7. **config.yml, só as regras que faltam**, antes do catch-all. Cada regra é conferida com `cloudflared tunnel --config <tmp> ingress validate` e `ingress rule https://<host>` (tem de cair em `127.0.0.1:8800` ou `8801`). Antes de gravar, cópia datada `/etc/cloudflared/config.yml.antes-mdbase-next.<AAAAmmdd-HHMMSS>`. Depois, reinicia o `cloudflared`.
 8. Confere `connect.madamelabs.com.br/ready` (200), `chat.madamelabs.com.br` (2xx/3xx), `next.madamelabs.com.br/ready` (200) e `next-log.madamelabs.com.br/health` (200).
 9. Ativa o timer `mdbase-next-backup` e apaga `/home/mrlabs/mdbase-next/*.env` com `shred`.
