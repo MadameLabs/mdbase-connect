@@ -10,11 +10,13 @@
 
 mod binding;
 mod config;
+mod create;
 mod plan;
 mod timer;
 
 pub use binding::Binding;
 pub use config::TasksConfig;
+pub use create::{NewTask, create, path_for, promote, resolve_person};
 pub use plan::{
     TaskView, archive, block, is_open, link_projects, set_status, skip, unblock, unskip, wikilink,
 };
