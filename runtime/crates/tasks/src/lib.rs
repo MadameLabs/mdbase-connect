@@ -14,6 +14,7 @@ pub mod conformance;
 mod create;
 mod plan;
 mod projects;
+mod temporal;
 mod timer;
 
 pub use binding::Binding;
