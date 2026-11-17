@@ -19,7 +19,7 @@ export function buildTrustBundle({ imageBundleBytes, assetBytes, publication, qu
   need(release.publication.workflow === 'publish-images.yml' && positive(release.publication.runId) && positive(release.publication.runAttempt), 'image publication');
   // Crypto/canonical payload validation belongs to the reference encoder, invoked
   // by the fixed publisher CLI. Never treat the calculated hash as authentication.
-  need(environment(asset.environment), 'only LAB, staging or production trust inventory is supported');
+  need(environment(asset.environment), 'only LAB, staging, production or mdbaselabs trust inventory is supported');
   need(assetBytes.length > 0 && assetBytes.length <= 65536, 'asset size');
   need(origin(asset.control_plane_origin) && origin(asset.log_origin), 'asset origins');
   need(exact(asset.source, ['repository', 'commit', 'version']) && asset.source.repository === release.repository && asset.source.commit === release.commit && asset.source.version === release.version, 'asset release binding');
@@ -47,5 +47,6 @@ export function validateTrustBundle(m) {
   const a = m.trustAssets[0];
   need(exact(a, ['path','length','sha256','environment','controlPlaneOrigin','logOrigin','source']) && environment(a.environment) && a.path === `next-trust/${a.environment}.json` && positive(a.length) && a.length <= 65536 && digest(a.sha256) && origin(a.controlPlaneOrigin) && origin(a.logOrigin), 'asset binding');
   need(a.environment !== 'production' || a.controlPlaneOrigin === 'https://connect.mdbase.dev', 'fixed production CP origin');
+  need(a.environment !== 'mdbaselabs' || a.controlPlaneOrigin === 'https://next.madamelabs.com.br', 'fixed mdbaselabs CP origin');
   need(exact(a.source, ['repository','commit','version']) && a.source.repository === m.repository && a.source.commit === m.commit && a.source.version === m.version, 'asset source');
 }

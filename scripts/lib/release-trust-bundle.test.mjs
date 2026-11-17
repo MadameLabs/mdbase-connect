@@ -65,3 +65,10 @@ test('mdbaselabs inventory binds only next-trust/mdbaselabs.json and its own con
  const m=buildTrustBundle(x);assert.equal(m.trustAssets[0].path,'next-trust/mdbaselabs.json');validateTrustBundle(m);
  const bad=structuredClone(m);bad.trustAssets[0].controlPlaneOrigin='https://connect.mdbase.dev';assert.equal(validateSchema(bad),false);
 });
+test('validateTrustBundle itself refuses an mdbaselabs bundle with another control-plane origin',()=>{
+ const x=input();x.assetBytes=Buffer.from(JSON.stringify({...asset,environment:'mdbaselabs',control_plane_origin:'https://evil.example',log_origin:'https://next-log.madamelabs.com.br'}));
+ assert.throws(()=>buildTrustBundle(x),/fixed mdbaselabs CP origin/);
+ const ok=input();ok.assetBytes=Buffer.from(JSON.stringify({...asset,environment:'mdbaselabs',control_plane_origin:'https://next.madamelabs.com.br',log_origin:'https://next-log.madamelabs.com.br'}));
+ const m=buildTrustBundle(ok);m.trustAssets[0].controlPlaneOrigin='https://evil.example';
+ assert.throws(()=>validateTrustBundle(m),/fixed mdbaselabs CP origin/);
+});

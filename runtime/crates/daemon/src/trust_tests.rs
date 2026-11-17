@@ -374,7 +374,7 @@ fn only_hermetic_tests_reach_a_loopback_control_plane() {
 /// digest.
 #[cfg(feature = "mdbaselabs")]
 #[test]
-fn mdbaselabs_embeds_exactly_the_test_asset() {
+fn mdbaselabs_embeds_exactly_the_labs_asset() {
     use super::mdbaselabs;
     assert_eq!(Environment::embedded(), Environment::MdbaseLabs);
     assert_eq!(Environment::MdbaseLabs.name(), "mdbaselabs");
