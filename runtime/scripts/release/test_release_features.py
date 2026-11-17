@@ -48,6 +48,11 @@ else:
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"shipped/{feature}", result.stderr)
 
+    def test_mdbaselabs_is_the_shipped_environment_feature(self):
+        # Our CLI's own environment: allowed in a release graph, unlike LAB or staging.
+        result, _ = self.run_check("shipped v0.0.0 (/owned/shipped)|mdbaselabs", "shipped")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_dependency_feature_and_deduplication(self):
         result, _ = self.run_check("shipped v0.0.0|\nportable v0.0.0|default,testing\nportable v0.0.0|testing", "shipped")
         self.assertNotEqual(result.returncode, 0)

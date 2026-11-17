@@ -28,6 +28,10 @@ jobs:
           # and tests that exact profile too.
           - shard: daemon-staging
             packages: -p mdbn-daemon --features staging
+          # Our mdbaselabs artifact (the CLI of the NEXT stack on Labs): its own
+          # embedded test-trust profile, exclusive with LAB, staging and local-rehearsal.
+          - shard: daemon-mdbaselabs
+            packages: -p mdbn-daemon --features mdbaselabs
     services:
       postgres:
         image: postgres:17-alpine
@@ -72,10 +76,10 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm --filter '@mdbase/connect-server...' build
           node test/system/run.mjs --suite runtime-daemon --no-prepare
-      - name: Staging cannot combine with LAB or local-rehearsal
-        if: matrix.shard == 'daemon-staging'
+      - name: Staging and mdbaselabs cannot combine with LAB, local-rehearsal or each other
+        if: matrix.shard == 'daemon-staging' || matrix.shard == 'daemon-mdbaselabs'
         run: |
-          for features in staging,lab staging,local-rehearsal; do
+          for features in staging,lab staging,local-rehearsal staging,mdbaselabs mdbaselabs,lab mdbaselabs,local-rehearsal; do
             if cargo check --locked -p mdbn-daemon --features "$features" 2> exclusive.log; then
               echo "--features $features compiled" >&2
               exit 1

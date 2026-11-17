@@ -15,7 +15,8 @@ test("runtime PRs and the merge queue share exhaustive retry-free native test sh
   assert.match(native, /packages: -p mdbn-replica/);
   assert.match(native, /packages: -p mdbn-daemon\n/);
   assert.match(native, /packages: -p mdbn-daemon --features staging\n/);
-  assert.match(native, /if: matrix.shard == 'daemon-staging'\n        run: \|\n          for features in staging,lab staging,local-rehearsal; do/);
+  assert.match(native, /packages: -p mdbn-daemon --features mdbaselabs\n/);
+  assert.match(native, /if: matrix.shard == 'daemon-staging' \|\| matrix.shard == 'daemon-mdbaselabs'\n        run: \|\n          for features in staging,lab staging,local-rehearsal staging,mdbaselabs mdbaselabs,lab mdbaselabs,local-rehearsal; do/);
   assert.match(native, /run: cargo test --locked \$\{\{ matrix.packages \}\}/);
   assert.doesNotMatch(native, /--no-run|cargo-test.mjs|--lib/);
 });
