@@ -1,0 +1,161 @@
+# Pilha "mdbase next" do mdbaselabs no Labs (projeto Compose mdbase-next).
+# Instalada em /opt/mdbase-next pelo instalar.sh (root, pelo Doctor Labs).
+# Segredos vêm do .env dessa pasta (0600), gerado pelo instalar.sh. Nenhum valor real fica aqui.
+# Imagens são carregadas com docker load (não há build no Labs).
+name: mdbase-next
+
+x-server-image: &server-image
+  image: mdbase-next-server:0.1.0-mdbaselabs.1
+
+x-log-image: &log-image
+  image: mdbase-next-log:0.1.0-mdbaselabs.1
+
+x-tls-env: &tls-env
+  NODE_EXTRA_CA_CERTS: /tls/ca.crt
+
+services:
+  next-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: mdbase_next
+      POSTGRES_USER: mdbase_next
+      POSTGRES_PASSWORD: ${NEXT_DATABASE_PASSWORD:?defina NEXT_DATABASE_PASSWORD no .env}
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server.crt
+      - -c
+      - ssl_key_file=/tls/server.key
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - max_connections=60
+    volumes:
+      - next-db:/var/lib/postgresql/data
+      - next-tls:/tls:ro
+    networks:
+      next:
+        ipv4_address: 172.31.249.10
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mdbase_next -d mdbase_next"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 384m
+    restart: unless-stopped
+
+  next-migrate:
+    <<: *server-image
+    command: ["node", "services/server/dist/migrate.js"]
+    environment:
+      <<: *tls-env
+      DATABASE_URL: postgres://mdbase_next:${NEXT_DATABASE_PASSWORD}@next-db:5432/mdbase_next?sslmode=verify-full
+    volumes:
+      - next-tls:/tls:ro
+    networks:
+      - next
+    depends_on:
+      next-db:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    restart: "no"
+
+  next-server:
+    <<: *server-image
+    env_file:
+      - .env
+    environment:
+      <<: *tls-env
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8787"
+      PORTAL_DIST: /app/apps/portal/dist
+      MDBASE_CONNECT_REVISION: fe365e09f473305a32ad87f429d0245a6a1dce67
+      MDBASE_CONNECT_ENVIRONMENT: mdbaselabs
+      PUBLIC_URL: https://next.madamelabs.com.br
+      MDBASE_CONNECT_IDENTITY_ISSUER: https://next.madamelabs.com.br
+      MDBASE_NEXT_CONTROL_PLANE: "1"
+      MDBASE_NEW_ACCOUNT_BACKEND: next
+      MDBASE_CONNECT_REGISTRATION: ${NEXT_REGISTRATION_MODE:-closed}
+      MDBASE_CONNECT_TRUST_PROXY: "1"
+      MDBASE_NEXT_LOG_SERVICE_URL: https://next-log.madamelabs.com.br
+      DATABASE_URL: postgres://mdbase_next:${NEXT_DATABASE_PASSWORD}@next-db:5432/mdbase_next?sslmode=verify-full
+    ports:
+      - "127.0.0.1:8800:8787"
+    volumes:
+      - next-tls:/tls:ro
+    networks:
+      - next
+    depends_on:
+      next-migrate:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    mem_limit: 512m
+    restart: unless-stopped
+
+  next-log:
+    <<: *log-image
+    environment:
+      <<: *tls-env
+      LOGSVC_LISTEN: 0.0.0.0:10000
+      LOGSVC_BACKEND: pg
+      LOGSVC_PG_URL: postgres://mdbase_next:${NEXT_DATABASE_PASSWORD}@next-db:5432/mdbase_next_log?sslmode=verify-full
+      LOGSVC_PG_CA_FILE: /tls/ca.crt
+      LOGSVC_OBJECTS_DIR: /var/lib/logsvc/objects
+      LOGSVC_PUBLIC_BASE: https://next-log.madamelabs.com.br
+      LOGSVC_ROOT_KEYS: ${LOGSVC_ROOT_KEYS:?defina LOGSVC_ROOT_KEYS no .env}
+      LOGSVC_TOKEN_ISSUERS: ${LOGSVC_TOKEN_ISSUERS:?defina LOGSVC_TOKEN_ISSUERS no .env}
+      LOGSVC_URL_SECRET: ${LOGSVC_URL_SECRET:?defina LOGSVC_URL_SECRET no .env}
+    ports:
+      - "127.0.0.1:8801:10000"
+    volumes:
+      - next-tls:/tls:ro
+      - next-log-objects:/var/lib/logsvc/objects
+    networks:
+      - next
+    depends_on:
+      next-db:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    restart: unless-stopped
+
+networks:
+  next:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.249.0/24
+
+volumes:
+  next-db:
+  next-tls:
+  next-log-objects:

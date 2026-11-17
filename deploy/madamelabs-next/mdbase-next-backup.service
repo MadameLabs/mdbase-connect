@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup da pilha mdbase next (pg_dump cifrado para o R2)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mdbase-next/backup.sh

@@ -1,0 +1,10 @@
+[Unit]
+Description=Backup diario da pilha mdbase next
+
+[Timer]
+# Horário local do Labs (22:50). O backup do Connect fica às 22:40.
+OnCalendar=*-*-* 22:50:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
