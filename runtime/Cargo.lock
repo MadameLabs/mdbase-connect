@@ -2392,6 +2392,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdbn-tasks"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "mdbn-trust"
 version = "0.0.0"
 dependencies = [

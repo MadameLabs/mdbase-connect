@@ -35,6 +35,7 @@ mdbn-takeover = { path = "crates/takeover" }
 mdbn-local-host = { path = "crates/local-host" }
 mdbase = { path = "crates/mdbase" }
 mdbn-trust = { path = "crates/trust" }
+mdbn-tasks = { path = "crates/tasks" }
 
 # External crates. Portable crates (core, wire, replica, store-file, wasm) must not
 # pull in getrandom, libc, std-only I/O crates or the `regex` crate; see deny.toml

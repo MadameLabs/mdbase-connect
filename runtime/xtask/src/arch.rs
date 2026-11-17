@@ -98,6 +98,8 @@ pub const RULES: &[(&str, &[&str])] = &[
     // mdbase-core.wasm: the pure helpers (digests, JSON Schema, catalog, packs)
     // for the npm `@mdbase-dev/mdbase` package. Ships inside that package only.
     ("mdbase-wasm", &["mdbn-core"]),
+    // Task semantics for `mdbase tasks`: pure, reads the collection's task type and config.
+    ("mdbn-tasks", &[]),
     // Old-format readers for migration: no internal deps, so they cannot
     // normalise old data through new semantics (legacy semantics boundary).
     ("mdbn-legacy", &[]),
@@ -178,6 +180,8 @@ pub const RULES: &[(&str, &[&str])] = &[
             // The shared native composition of a collection folder (store, host
             // lock, host services) under the collection runtime.
             "mdbn-local-host",
+            // Task semantics for `mdbase tasks` (pure, no internal deps).
+            "mdbn-tasks",
         ],
     ),
     ("xtask", &[]),
