@@ -323,7 +323,7 @@ fn promover_sem_data_de_criacao_usa_created() {
     let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
     assert_eq!(
         campos(&op).get("dateCreated"),
-        Some(&json!("2026-11-16T00:00:00Z"))
+        Some(&json!("2026-11-16T00:00:00-03:00"))
     );
 }
 
@@ -334,7 +334,7 @@ fn promover_sem_data_de_criacao_usa_data() {
     let op = promote(&b, &TasksConfig::default(), &t, &nova("Ideia"), AGORA).expect("promotes");
     assert_eq!(
         campos(&op).get("dateCreated"),
-        Some(&json!("2026-11-14T00:00:00Z"))
+        Some(&json!("2026-11-14T00:00:00-03:00"))
     );
 }
 

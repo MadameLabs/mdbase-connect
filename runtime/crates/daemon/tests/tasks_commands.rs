@@ -1160,6 +1160,14 @@ fn promote_documento_tipado_aparece_no_list() {
     assert_eq!(code, 0, "{v}");
     let (code, v) = f.json(&["tasks", "promote", "01-planejamento/Sem data.md"]);
     assert_eq!(code, 0, "{v}");
+    // A note with no dates at all: its creation date is the clock's `now`.
+    std::fs::write(
+        f.root.join("01-planejamento/Agora.md"),
+        "---\ntype: plano\ntags: [ideia]\ntitle: \"Agora\"\n---\nCorpo.\n",
+    )
+    .unwrap();
+    let (code, v) = f.json(&["tasks", "promote", "01-planejamento/Agora.md"]);
+    assert_eq!(code, 0, "{v}");
     let (code, v) = f.json(&["tasks", "list"]);
     assert_eq!(code, 0, "{v}");
     let paths: Vec<&str> = v["result"]
@@ -1170,9 +1178,31 @@ fn promote_documento_tipado_aparece_no_list() {
         .collect();
     assert!(paths.contains(&"01-planejamento/Ideia.md"), "{v}");
     assert!(paths.contains(&"01-planejamento/Sem data.md"), "{v}");
+    assert!(paths.contains(&"01-planejamento/Agora.md"), "{v}");
     assert!(f.read("01-planejamento/Ideia.md").contains("type: plano"));
-    assert!(
-        f.read("01-planejamento/Sem data.md")
-            .contains("dateCreated: \"2026-11-14T00:00:00Z\"")
-    );
+
+    // The date-only value keeps its local day: midnight with the clock's offset,
+    // whatever the machine's timezone is.
+    let data = creation_of(&f, "01-planejamento/Sem data.md");
+    let agora = creation_of(&f, "01-planejamento/Agora.md");
+    assert!(data.starts_with("2026-11-14T00:00:00"), "{data}");
+    assert_eq!(offset_of(&data), offset_of(&agora), "{data} vs {agora}");
+}
+
+/// The `dateCreated` value written in a note's frontmatter.
+fn creation_of(f: &Fixture, rel: &str) -> String {
+    f.read(rel)
+        .lines()
+        .find_map(|l| l.strip_prefix("dateCreated: "))
+        .expect("dateCreated written")
+        .trim_matches('"')
+        .to_string()
+}
+
+/// The zone part of a date-time: `Z` or the trailing `+HH:MM` / `-HH:MM`.
+fn offset_of(date_time: &str) -> &str {
+    match date_time.rfind(['+', '-']).filter(|i| *i > 10) {
+        Some(i) => &date_time[i..],
+        None => &date_time[date_time.len() - 1..],
+    }
 }

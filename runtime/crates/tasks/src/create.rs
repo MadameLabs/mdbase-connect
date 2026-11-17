@@ -90,7 +90,7 @@ pub fn create(b: &Binding, c: &TasksConfig, n: &NewTask) -> Result<Value, TaskEr
 /// changed.
 ///
 /// A note without a creation date (`dateCreated`) gets one: from its `created`
-/// field, else its `data` field (a date becomes midnight UTC), else `now`, the
+/// field, else its `data` field (a date becomes midnight in the zone of `now`), else `now`, the
 /// caller's clock as a date-time. An existing `dateCreated` is never overwritten.
 ///
 /// A note that already carries the `task` tag is repaired, not restarted: its
@@ -134,21 +134,33 @@ pub fn promote(
 }
 
 /// The creation date for a note that has none: `created`, else `data`, else `now`.
-/// A date-only value becomes midnight UTC, since the type's `dateCreated` takes a
-/// date-time; a value that already has a time is used as written.
+/// A date-only value becomes midnight in the zone of `now`, so it keeps its local
+/// day; a value that already has a time is used as written.
 fn creation_date(note: &TaskView, now: &str) -> String {
+    let zone = zone_of(now);
     [CREATED_KEY, DATA_KEY]
         .iter()
-        .find_map(|key| as_date_time(note.frontmatter.get(*key)))
+        .find_map(|key| as_date_time(note.frontmatter.get(*key), zone))
         .unwrap_or_else(|| now.to_string())
 }
 
-fn as_date_time(value: Option<&Value>) -> Option<String> {
-    let text = value?.as_str()?.trim();
-    if is_date(text) {
-        return Some(format!("{text}T00:00:00Z"));
+/// The zone of a date-time: `Z`, or the trailing `±HH:MM`. A value without one
+/// counts as `Z`.
+fn zone_of(date_time: &str) -> &str {
+    match date_time.rfind(['+', '-']).filter(|i| *i > 10) {
+        Some(i) => &date_time[i..],
+        None => "Z",
     }
-    text.contains('T').then(|| text.to_string())
+}
+
+fn as_date_time(value: Option<&Value>, zone: &str) -> Option<String> {
+    let text = value?.as_str()?.trim();
+    if text.len() == 10 && is_date(text) {
+        return Some(format!("{text}T00:00:00{zone}"));
+    }
+    let day = text.get(..10)?;
+    let rest = text.get(10..)?;
+    (is_date(day) && rest.starts_with('T')).then(|| text.to_string())
 }
 
 fn has_task_tag(b: &Binding, note: &TaskView) -> bool {
