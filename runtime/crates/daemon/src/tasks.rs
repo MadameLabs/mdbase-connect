@@ -1599,7 +1599,7 @@ async fn gate_context(
         "Plan Mode e update_plan são camada efêmera da sessão: não criam tarefa por si sós e não substituem o artefato durável.".to_string(),
         format!("Fase terminada é encerrada com --status {closed} antes de a seguinte ser rastreada, para não haver duas tarefas simultâneas representando a mesma feature."),
         format!("Listar: mdbase tasks list --responsavel {p} -C {c}"),
-        format!("Criar: mdbase tasks create \"TÍTULO\" --responsavel {p} --marca MARCA --projeto PROJETO -C {c}"),
+        format!("Criar (nome: verbo + objeto, 2 a 4 palavras): mdbase tasks create \"TÍTULO\" --responsavel {p} --marca MARCA --projeto PROJETO -C {c}"),
         format!("Promover uma nota com execução: mdbase tasks promote \"CAMINHO_EXATO\" --responsavel {p} --marca Madame_Labs --projeto PROJETO -C {c}"),
         format!("Iniciar: mdbase tasks start \"CAMINHO_EXATO\" --responsavel {p} -C {c}"),
         format!("A pessoa usuária pode dispensar tarefa e cronômetro explicitamente; nunca escolher ou criar silenciosamente. Use somente o mdbase tasks. O cronômetro acompanha a tarefa, não a resposta: não pare ao fim de cada resposta, só no desfecho da tarefa (confirmação, troca de assunto ou encerramento). No desfecho, o agente decide o status a partir do contexto; só pergunte diante de ambiguidade material. mdbase tasks stop exige --status: {statuses}. Encerrar: mdbase tasks stop \"CAMINHO_EXATO\" --responsavel {p} --status <status> -C {c}"),
