@@ -276,19 +276,35 @@ ADD_PORTAL=1; ADD_LOG=1
 tem_regra "$HOST_PORTAL" && ADD_PORTAL=0
 tem_regra "$HOST_LOG" && ADD_LOG=0
 
+# Pela API da Cloudflare, com o token de DNS do Doctor (/etc/doctor-labs/cloudflare.ini):
+# o `cloudflared tunnel route dns` precisa do cert.pem da conta, que fica com o mrlabs, não com o root.
+# A API diz para onde um registro existente aponta: o que já aponta para o túnel passa,
+# o que aponta para outro lugar para o script. O token entra no curl pelo stdin.
+CF_INI=/etc/doctor-labs/cloudflare.ini
+[[ -f $CF_INI ]] || falha "$CF_INI não existe (token de DNS da Cloudflare)"
+CF_TOKEN=$(sed -n 's/^dns_cloudflare_api_token *= *//p' "$CF_INI" | head -1)
+[[ -n $CF_TOKEN ]] || falha "$CF_INI sem dns_cloudflare_api_token"
+cf() { curl -fsS -m 20 -H @- -H "Content-Type: application/json" "$@" <<<"Authorization: Bearer $CF_TOKEN"; }
+ZONA_ID=$(cf "https://api.cloudflare.com/client/v4/zones?name=madamelabs.com.br" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["result"][0]["id"])') \
+  || falha "zona madamelabs.com.br não encontrada pela API"
 for par in "$HOST_PORTAL:$ADD_PORTAL" "$HOST_LOG:$ADD_LOG"; do
   h=${par%:*}; add=${par##*:}
   [[ $add -eq 1 ]] || { log "regra de $h já existe: CNAME não mexido"; continue; }
-  if out=$(cloudflared tunnel route dns "$TUNEL" "$h" 2>&1); then
-    log "CNAME $h criado"
-  elif grep -qi 'already exists' <<<"$out"; then
-    # "already exists" não diz para onde o registro aponta: a conferência é manual (LEIA-ME.md).
-    [[ ${CNAME_CONFERIDO:-0} == 1 ]] || falha "CNAME $h já existe e não há regra no config. Conferir no painel que aponta para $TUNEL.cfargotunnel.com e rodar de novo com CNAME_CONFERIDO=1"
-    log "CNAME $h já existe; conferido à mão (CNAME_CONFERIDO=1)"
+  atual=$(cf "https://api.cloudflare.com/client/v4/zones/$ZONA_ID/dns_records?name=$h" \
+    | python3 -I -c 'import json,sys; r=json.load(sys.stdin)["result"]; print(";".join(x["type"] + " " + x["content"] for x in r))') \
+    || falha "consulta do DNS de $h falhou"
+  if [[ $atual == "CNAME $TUNEL.cfargotunnel.com" ]]; then
+    log "CNAME $h já aponta para o túnel"
+  elif [[ -z $atual ]]; then
+    cf -X POST "https://api.cloudflare.com/client/v4/zones/$ZONA_ID/dns_records" \
+      --data "{\"type\":\"CNAME\",\"name\":\"$h\",\"content\":\"$TUNEL.cfargotunnel.com\",\"proxied\":true,\"ttl\":1}" >/dev/null \
+      || falha "criação do CNAME $h falhou"
+    log "CNAME $h criado (proxied, -> $TUNEL.cfargotunnel.com)"
   else
-    printf '%s\n' "$out" >&2; falha "route dns $h"
+    falha "$h já existe com outro destino ($atual); conferir no painel da Cloudflare"
   fi
 done
+unset CF_TOKEN
 
 # ---------------------------------------------------------------- 6. config.yml: só as regras que faltam, antes do catch-all
 if [[ $ADD_PORTAL -eq 1 || $ADD_LOG -eq 1 ]]; then
