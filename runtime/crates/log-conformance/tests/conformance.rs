@@ -10,7 +10,7 @@ use mdbn_log_conformance::Target;
 use mdbn_log_conformance::fixture::CP_LABEL;
 use mdbn_log_conformance::suite::{report, run};
 use mdbn_log_server::fs::FsObjects;
-use mdbn_log_server::pg::PgBackend;
+use mdbn_log_server::pg::{PgBackend, PgDeletionRegistry};
 use mdbn_log_server::test_support::TestDeletionFloors;
 use mdbn_log_server::{AnyService, Gateway, pg_listener, serve, testkit_config};
 use mdbn_log_service::Service;
@@ -84,6 +84,55 @@ async fn postgres_backend() {
     tokio::spawn(pg_listener(gw, url));
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     t.name = "postgres".into();
+    let filter = std::env::var("MDBN_LOGSVC_FILTER").ok();
+    assert!(report(&t, &run(&t, filter.as_deref()).await));
+}
+
+/// Madame Labs fork: the same suite over Postgres with the native, durable
+/// deletion registry (no test-support floors anywhere in the gateway).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_backend_native_deletion_registry() {
+    let Ok(url) =
+        std::env::var("MDBN_TEST_PG_URL").or_else(|_| std::env::var("MDBN_LOGSVC_PG_URL"))
+    else {
+        assert!(
+            std::env::var("MDBN_REQUIRE_REAL_BACKENDS").as_deref() != Ok("1"),
+            "MDBN_TEST_PG_URL or MDBN_LOGSVC_PG_URL is required"
+        );
+        eprintln!("MDBN_TEST_PG_URL not set: skipping the Postgres run");
+        return;
+    };
+    let be = PgBackend::connect(&url, 32).await.expect("postgres");
+    let registry = std::sync::Arc::new(
+        PgDeletionRegistry::connect(&url, 4)
+            .await
+            .expect("registry"),
+    );
+    let be = be.with_independent_floor_reader(registry.clone());
+    let dir = std::env::var_os("MDBN_LOGSVC_TEST_OBJECTS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/logsvc-test-objects"));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let gw = Gateway::new_with_pg_deletion_registry(
+        AnyService::Pg(Service::new(
+            be,
+            FsObjects::new(dir),
+            testkit_config(CP_LABEL, &base),
+        )),
+        true,
+        registry,
+    );
+    tokio::spawn(serve(gw.clone(), l));
+    tokio::spawn(pg_listener(gw, url));
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let t = Target {
+        name: "postgres-native-registry".into(),
+        ws: format!("ws://{addr}"),
+        http: base,
+        debug_hooks: true,
+    };
     let filter = std::env::var("MDBN_LOGSVC_FILTER").ok();
     assert!(report(&t, &run(&t, filter.as_deref()).await));
 }

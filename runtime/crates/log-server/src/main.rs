@@ -16,12 +16,18 @@
 //! control plane, for local tests and measurements only; it refuses a non-loopback
 //! listener. Postgres must use TLS (`sslmode=require` or `verify-full` in the URL)
 //! unless it is on loopback.
+//!
+//! Madame Labs fork: `--deletion-registry` (or `LOGSVC_PG_DELETION_REGISTRY=1`)
+//! makes the Postgres backend its own collection deletion registry and floor
+//! reader (`pg::PgDeletionRegistry`, own pool of `LOGSVC_PG_REGISTRY_POOL`,
+//! default 8). Without it the Postgres backend refuses every publishing write
+//! (`unavailable`), as upstream ships it.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::path::PathBuf;
 
 use mdbn_log_server::fs::FsObjects;
-use mdbn_log_server::pg::PgBackend;
+use mdbn_log_server::pg::{PgBackend, PgDeletionRegistry};
 use mdbn_log_server::{AnyService, Gateway, pg_listener, serve, testkit_config};
 use mdbn_log_service::Service;
 use mdbn_log_service::mem::{MemBackend, MemObjects};
@@ -104,10 +110,31 @@ async fn main() {
             if args.iter().any(|a| a == "--notify-in-txn") {
                 be.notify = mdbn_log_server::pg::NotifyMode::InTransaction;
             }
-            let gw = Gateway::new(
-                AnyService::Pg(Service::new(be, FsObjects::new(objects), config)),
-                debug,
-            );
+            let registry = args.iter().any(|a| a == "--deletion-registry")
+                || std::env::var("LOGSVC_PG_DELETION_REGISTRY").as_deref() == Ok("1");
+            let gw = if registry {
+                let size: usize = std::env::var("LOGSVC_PG_REGISTRY_POOL")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(8);
+                let registry = std::sync::Arc::new(
+                    PgDeletionRegistry::connect(&url, size)
+                        .await
+                        .unwrap_or_else(|e| panic!("deletion registry: {e}")),
+                );
+                eprintln!("{{\"event\":\"deletion_registry\",\"backend\":\"pg\"}}");
+                let be = be.with_independent_floor_reader(registry.clone());
+                Gateway::new_with_pg_deletion_registry(
+                    AnyService::Pg(Service::new(be, FsObjects::new(objects), config)),
+                    debug,
+                    registry,
+                )
+            } else {
+                Gateway::new(
+                    AnyService::Pg(Service::new(be, FsObjects::new(objects), config)),
+                    debug,
+                )
+            };
             let g = gw.clone();
             tokio::spawn(async move {
                 loop {

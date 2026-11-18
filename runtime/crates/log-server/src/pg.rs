@@ -45,6 +45,11 @@ pub const MIGRATIONS: &[(i32, &str, &str)] = &[
            device bytea PRIMARY KEY,
            revoked_at bigint NOT NULL)",
     ),
+    (
+        3,
+        "madamelabs: native collection deletion registry",
+        deletion_registry::DELETION_REGISTRY_SCHEMA,
+    ),
 ];
 
 /// Apply pending migrations in one transaction. Concurrent gateways starting at
@@ -229,6 +234,9 @@ pub trait IndependentFloorReader: Send + Sync {
 
 #[cfg(test)]
 mod floor_tests;
+
+mod deletion_registry;
+pub use deletion_registry::PgDeletionRegistry;
 
 /// Postgres backend over a connection pool.
 pub struct PgBackend {

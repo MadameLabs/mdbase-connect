@@ -122,6 +122,8 @@ pub struct Gateway {
     http_nonces: NonceCache,
     #[cfg(feature = "test-support")]
     test_deletion_floors: Option<Arc<test_support::TestDeletionFloors>>,
+    /// Madame Labs fork: the native Postgres deletion registry RPCs.
+    pg_deletion_registry: Option<Arc<pg::PgDeletionRegistry>>,
 }
 
 impl HubHost for Gateway {
@@ -188,7 +190,20 @@ impl Gateway {
             http_nonces: NonceCache::default(),
             #[cfg(feature = "test-support")]
             test_deletion_floors: None,
+            pg_deletion_registry: None,
         })
+    }
+
+    /// Madame Labs fork: a gateway that serves the CP's deletion registry RPCs
+    /// from Postgres. The same registry must be the backend's floor reader.
+    pub fn new_with_pg_deletion_registry(
+        svc: AnyService,
+        debug_hooks: bool,
+        registry: Arc<pg::PgDeletionRegistry>,
+    ) -> Arc<Self> {
+        let mut gateway = Self::new(svc, debug_hooks);
+        Arc::get_mut(&mut gateway).unwrap().pg_deletion_registry = Some(registry);
+        gateway
     }
 
     /// Explicit native conformance fixture; never enabled by the server factory.
@@ -472,6 +487,13 @@ async fn rpc_inner(
         #[cfg(feature = "test-support")]
         if let Some(floors) = &gw.test_deletion_floors
             && let Some(result) = floors.call(&gw.svc, &p, &req.method, &req.params)
+        {
+            return result;
+        }
+        // Madame Labs fork: the native registry, behind the same CP token,
+        // possession and nonce validation as every other RPC.
+        if let Some(registry) = &gw.pg_deletion_registry
+            && let Some(result) = registry.call(&p, &req.method, &req.params).await
         {
             return result;
         }
