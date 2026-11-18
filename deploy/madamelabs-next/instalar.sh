@@ -204,13 +204,20 @@ if [[ ! -f $DESTINO/.env.db ]]; then
   TMP_ENV=$(mktemp "$DESTINO/.env.XXXXXX")
   {
     grep '^LOGSVC_' "$ORIGEM/log.env"
-    printf 'LOGSVC_PG_URL=postgres://mdbase_next:%s@next-db:5432/mdbase_next_log?sslmode=verify-full\n' "$PW"
+    # sslmode=require: o tokio-postgres do log-server não conhece verify-full (recusa a URL como
+    # inválida); com native-tls e o LOGSVC_PG_CA_FILE, require já confere certificado e nome.
+    printf 'LOGSVC_PG_URL=postgres://mdbase_next:%s@next-db:5432/mdbase_next_log?sslmode=require\n' "$PW"
   } > "$TMP_ENV"
   mv -f "$TMP_ENV" "$DESTINO/.env.log"; TMP_ENV=""
   unset PW
   log ".env.db, .env.servidor e .env.log criados (0600)"
 else
   log ".env.* já existem: mantidos"
+fi
+# Correção de uma instalação anterior: o .env.log nasceu com sslmode=verify-full.
+if grep -q '^LOGSVC_PG_URL=.*sslmode=verify-full' "$DESTINO/.env.log"; then
+  sed -i 's/^\(LOGSVC_PG_URL=.*\)sslmode=verify-full/\1sslmode=require/' "$DESTINO/.env.log"
+  log ".env.log: sslmode=verify-full trocado por require (o log-server não conhece verify-full)"
 fi
 chown root:root "$DESTINO"/.env.*
 
