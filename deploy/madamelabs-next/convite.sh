@@ -12,6 +12,10 @@
 # não cria conta, e um convite só é aceito com o registro em "invite" ou "open".
 set -euo pipefail
 C=mdbase-next-next-server-1
+ENV_SERVIDOR=/opt/mdbase-next/.env.servidor
+TERMOS=https://madamelabs.com.br/termos-de-uso/
+PRIVACIDADE=https://madamelabs.com.br/politica-de-privacidade/
+VERSAO=2026-11-17
 falha() { echo "FALHOU: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || falha "rode como root"
 docker inspect -f '{{.State.Running}}' "$C" 2>/dev/null | grep -qx true || falha "$C não está rodando"
@@ -26,10 +30,22 @@ case "${1:-}" in
 	abrir)
 		EMAIL=${2:-}
 		[[ $EMAIL =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || falha "uso: convite.sh abrir <email>"
+		# Cadastro por convite exige termos e privacidade: os endereços vão no .env.servidor
+		# (lidos na partida do servidor) e as versões na política.
+		if ! grep -q '^MDBASE_CONNECT_TERMS_URL=' "$ENV_SERVIDOR"; then
+			cp -p "$ENV_SERVIDOR" "$ENV_SERVIDOR.antes-termos"
+			printf 'MDBASE_CONNECT_TERMS_URL=%s\nMDBASE_CONNECT_PRIVACY_URL=%s\n' "$TERMOS" "$PRIVACIDADE" >> "$ENV_SERVIDOR"
+			docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next up -d next-server
+			for _ in $(seq 60); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8800/ready)" = 200 ] && break; sleep 2; done
+			[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8800/ready)" = 200 ] || falha "next-server não voltou depois de ler os termos"
+			docker inspect -f '{{.State.Running}}' "$C" | grep -qx true || falha "$C parou"
+			echo "servidor reiniciado com os endereços de termos e privacidade"
+		fi
 		REV=$(politica | campo revision)
-		adm policy update --registration invite --password-auth enabled --expected-revision "$REV" \
+		adm policy update --registration invite --password-auth enabled \
+			--terms-version "$VERSAO" --privacy-version "$VERSAO" --expected-revision "$REV" \
 			--actor arthur --reason "primeira conta da pilha mdbaselabs (convite)" >/dev/null
-		echo "política: registro=invite, senha=enabled (revisão anterior $REV)"
+		echo "política: registro=invite, senha=enabled, termos e privacidade $VERSAO (revisão anterior $REV)"
 		adm invite create --email "$EMAIL" --actor arthur --reason "primeira conta da pilha mdbaselabs" \
 			--entitlement-profile beta_v1 --expires-in 3600 --token-output shown \
 			| python3 -I -c 'import json,sys; i=json.load(sys.stdin)["invitation"]; print("convite para %s, vence %s" % (i["email"], i["expires_at"])); print("link: " + i.get("invitation_url", "https://next.madamelabs.com.br" + i["invitation_path"]))'
