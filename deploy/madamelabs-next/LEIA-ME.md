@@ -33,7 +33,7 @@ Todos os arquivos têm de dar `OK`. Se algum falhar, parar e avisar o Arthur.
 | `.env.servidor` | variáveis do servidor (sem `LOGSVC_*`), `DATABASE_URL`, `MDBASE_CONNECT_GOOGLE_*` e `MDBASE_CONNECT_ALLOWED_GOOGLE_SUBJECTS` | `next-migrate` e `next-server` |
 | `.env.log` | `LOGSVC_*` (sem variáveis do servidor) e `LOGSVC_PG_URL` | só `next-log` |
 
-`MDBASE_CONNECT_ALLOWED_GOOGLE_SUBJECTS` é o allowlist de login: é copiado do `.env` do Connect, por nome, para o novo servidor compartilhar a mesma lista de contas autorizadas. Vazio hoje no Connect até a primeira entrada pelo Google.
+`MDBASE_CONNECT_ALLOWED_GOOGLE_SUBJECTS` é o allowlist de login: é copiado do `.env` do Connect (lá os nomes são curtos, `GOOGLE_CLIENT_ID` e `ALLOWED_GOOGLE_SUBJECTS`, e o `override.yml` dele os repassa com o prefixo), para o novo servidor compartilhar a mesma lista de contas autorizadas. Vazio hoje no Connect até a primeira entrada pelo Google.
 
 `backup.key` (0600) é a chave de cifragem dos backups: ver ficha 5.
 

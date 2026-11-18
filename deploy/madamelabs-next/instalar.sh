@@ -121,7 +121,9 @@ docker info >/dev/null 2>&1 || falha "docker não responde"
 if [[ ! -f $DESTINO/.env.db ]]; then
   for arq in servidor.env log.env; do [[ -f $ORIGEM/$arq ]] || falha "ausente: $ORIGEM/$arq"; done
   [[ -f $CONNECT_ENV ]] || falha "ausente: $CONNECT_ENV"
-  grep -q '^MDBASE_CONNECT_GOOGLE_CLIENT_ID=' "$CONNECT_ENV" || falha "MDBASE_CONNECT_GOOGLE_CLIENT_ID não está em $CONNECT_ENV"
+  # No .env do Connect os nomes são curtos; o override.yml dele os repassa como MDBASE_CONNECT_*.
+  grep -q '^GOOGLE_CLIENT_ID=.' "$CONNECT_ENV" || falha "GOOGLE_CLIENT_ID não está (ou está vazio) em $CONNECT_ENV"
+  grep -q '^ALLOWED_GOOGLE_SUBJECTS=' "$CONNECT_ENV" || falha "ALLOWED_GOOGLE_SUBJECTS não está em $CONNECT_ENV"
   for k in MDBASE_NEXT_ROOT_PUBLIC_KEY MDBASE_NEXT_POLICY_SIGNING_KEY MDBASE_NEXT_POLICY_KEY_CERT MDBASE_NEXT_LOG_TOKEN_SIGNING_KEY MDBASE_NEXT_LOG_TRANSPORT_KEY MDBASE_CONNECT_AUTH_RATE_LIMIT_SECRET; do
     grep -q "^$k=" "$ORIGEM/servidor.env" || falha "$k ausente em servidor.env"
   done
@@ -193,7 +195,8 @@ if [[ ! -f $DESTINO/.env.db ]]; then
     echo
     printf 'DATABASE_URL=postgres://mdbase_next:%s@next-db:5432/mdbase_next?sslmode=verify-full\n' "$PW"
     # Login do Google: o allowlist (MDBASE_CONNECT_ALLOWED_GOOGLE_SUBJECTS) é copiado do Connect por decisão do coordenador.
-    grep -E '^(MDBASE_CONNECT_GOOGLE_[A-Z_]+|MDBASE_CONNECT_ALLOWED_GOOGLE_SUBJECTS)=' "$CONNECT_ENV"
+    # No .env do Connect: GOOGLE_CLIENT_ID e ALLOWED_GOOGLE_SUBJECTS; aqui, com o prefixo que o servidor lê.
+    sed -n -E 's/^(GOOGLE_CLIENT_ID|ALLOWED_GOOGLE_SUBJECTS)=/MDBASE_CONNECT_\1=/p' "$CONNECT_ENV"
   } > "$TMP_ENV"
   mv -f "$TMP_ENV" "$DESTINO/.env.servidor"; TMP_ENV=""
 
