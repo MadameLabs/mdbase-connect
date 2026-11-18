@@ -12,7 +12,7 @@ x-server-image: &server-image
   image: mdbase-next-server:0.1.0-mdbaselabs.1
 
 x-log-image: &log-image
-  image: mdbase-next-log:0.1.0-mdbaselabs.1
+  image: mdbase-next-log:0.1.0-mdbaselabs.2
 
 x-tls-env: &tls-env
   NODE_EXTRA_CA_CERTS: /tls/ca.crt
@@ -132,6 +132,7 @@ services:
       <<: *tls-env
       LOGSVC_LISTEN: 0.0.0.0:10000
       LOGSVC_BACKEND: pg
+      LOGSVC_PG_DELETION_REGISTRY: "1"
       LOGSVC_PG_CA_FILE: /tls/ca.crt
       LOGSVC_OBJECTS_DIR: /var/lib/logsvc/objects
       LOGSVC_PUBLIC_BASE: https://next-log.madamelabs.com.br

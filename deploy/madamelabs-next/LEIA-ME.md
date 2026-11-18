@@ -13,6 +13,8 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `mdbase-next-backup.service` e `.timer` | backup diário às 22:50 (horário local) |
 | `liberar-rede.sh` | ficha 2: põe `172.31.249.0/24` no `ISOLADAS` e recarrega, com volta automática |
 | `isolada.py` | confere pela tabela carregada que uma faixa está isolada (por cobertura) |
+| `log-backend.sh` | troca o backend do `next-log` entre memória e Postgres (só a linha `LOGSVC_BACKEND`) |
+| `log-registro.sh` | leva o `next-log` à imagem `.2` com o registro de exclusões em Postgres, com volta automática |
 | `SHA256SUMS` | hashes dos arquivos acima |
 
 ## Verificação do pacote (antes de rodar qualquer coisa)
@@ -105,6 +107,20 @@ Se falhar depois do passo 7, o trap restaura a cópia **desta execução** (data
 **Ficha 6, Arthur, no painel da Cloudflare:** conferir que a regra do WAF (só Brasil) cobre `next.madamelabs.com.br` e `next-log.madamelabs.com.br`. Hoje ela cita os hosts do Connect e do sync pelo nome.
 
 **Ficha 7, Arthur:** primeiro login em `https://next.madamelabs.com.br` com Google.
+
+## Registro de exclusões em Postgres (depois da instalação)
+
+O backend Postgres do upstream não grava: falta o produtor do piso de exclusão. A imagem `mdbase-next-log:0.1.0-mdbaselabs.2` traz o `PgDeletionRegistry` do fork (commit `e9f7ae72`), ligado por `LOGSVC_PG_DELETION_REGISTRY=1`. O piso fica numa tabela do mesmo Postgres do log (`ls_collection_deletion_floor`): restaurar backup anterior a uma exclusão também esquece o piso.
+
+**Ficha A, sem root:** pôr `mdbase-next-log-0.1.0-mdbaselabs.2.tar.gz` e o `.sha256` em `/home/mrlabs/mdbase-next/imagens/`, atualizar o pacote e rodar `sha256sum -c SHA256SUMS`.
+
+**Ficha B, root, pelo Doctor (a imagem vai como argumento):**
+
+```sh
+bash /home/mrlabs/mdbase-next/log-registro.sh /home/mrlabs/mdbase-next/imagens/mdbase-next-log-0.1.0-mdbaselabs.2.tar.gz
+```
+
+Confere o sha256 fixado no script, carrega a imagem, copia o `compose.yml` (`.antes-log-registro.<data>`), troca a imagem do log, põe `LOGSVC_BACKEND: pg` e `LOGSVC_PG_DELETION_REGISTRY: "1"` e sobe só o `next-log`. Exige `/ready` e `/health` 200 e a linha `"event":"deletion_registry"` no log; se faltar algo, volta o `compose.yml` e sobe o `next-log` como estava. O conteúdo do log em memória se perde: coleções da prova precisam ser recriadas.
 
 ## Desfazer
 

@@ -6,8 +6,9 @@
 #
 # Por quê: no upstream, o backend Postgres do log-server não tem o leitor de piso de
 # exclusão ("PG is a non-launch fallback", runtime/crates/log-server/src/pg.rs:213); toda
-# gravação que publica responde `unavailable`. Até o nosso fork ter esse leitor, a prova
-# (Task 6 de pilha-next-no-labs) roda com o backend em memória.
+# gravação que publica responde `unavailable`. A prova (Task 6 de pilha-next-no-labs) rodou
+# com o backend em memória. O fork tem o leitor desde e9f7ae72: para voltar ao Postgres com
+# ele, usar log-registro.sh (imagem .2 e LOGSVC_PG_DELETION_REGISTRY), não `pg` daqui.
 # Mexe só na linha LOGSVC_BACKEND do /opt/mdbase-next/compose.yml (cópia .antes-log-memoria).
 set -euo pipefail
 COMPOSE=/opt/mdbase-next/compose.yml
