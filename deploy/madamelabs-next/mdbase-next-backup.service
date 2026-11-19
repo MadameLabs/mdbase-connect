@@ -1,5 +1,5 @@
 [Unit]
-Description=Backup da pilha mdbase next (pg_dump cifrado para o R2)
+Description=Backup da stack mdbase next (pg_dump cifrado para o R2)
 Requires=docker.service
 After=docker.service
 

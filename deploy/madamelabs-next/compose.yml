@@ -1,4 +1,4 @@
-# Pilha "mdbase next" do mdbaselabs no Labs (projeto Compose mdbase-next).
+# Stack "mdbase next" do mdbaselabs no Labs (projeto Compose mdbase-next).
 # Instalada em /opt/mdbase-next pelo instalar.sh (root, pelo Doctor Labs).
 # Segredos ficam em três arquivos 0600 ao lado deste (gerados pelo instalar.sh):
 #   .env.db       senha do Postgres (só o next-db recebe)

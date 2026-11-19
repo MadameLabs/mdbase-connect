@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# backup.sh: pg_dump dos dois bancos da pilha mdbase next, contagem exata por tabela,
+# backup.sh: pg_dump dos dois bancos da stack mdbase next, contagem exata por tabela,
 # cifrado com gpg (AES-256) e enviado ao R2.
 # CONFERIR antes de confiar: escrito a partir da descrição em estado-atual-labs.md (item 8); o molde
 # /opt/mdbase-connect/bin/backup é root e não pôde ser lido. Credenciais lidas por nome do .env do Connect; nenhum valor é impresso.

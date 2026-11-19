@@ -44,9 +44,9 @@ case "${1:-}" in
 		REV=$(politica | campo revision)
 		adm policy update --registration invite --password-auth enabled \
 			--terms-version "$VERSAO" --privacy-version "$VERSAO" --expected-revision "$REV" \
-			--actor arthur --reason "primeira conta da pilha mdbaselabs (convite)" >/dev/null
+			--actor arthur --reason "primeira conta da stack mdbaselabs (convite)" >/dev/null
 		echo "política: registro=invite, senha=enabled, termos e privacidade $VERSAO (revisão anterior $REV)"
-		adm invite create --email "$EMAIL" --actor arthur --reason "primeira conta da pilha mdbaselabs" \
+		adm invite create --email "$EMAIL" --actor arthur --reason "primeira conta da stack mdbaselabs" \
 			--entitlement-profile beta_v1 --expires-in 3600 --token-output shown \
 			| python3 -I -c 'import json,sys; i=json.load(sys.stdin)["invitation"]; print("convite para %s, vence %s" % (i["email"], i["expires_at"])); print("link: " + i.get("invitation_url", "https://next.madamelabs.com.br" + i["invitation_path"]))'
 		echo "depois do cadastro: bash convite.sh fechar"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# desfazer.sh: derruba a pilha mdbase next e tira as duas regras de túnel dela.
+# desfazer.sh: derruba a stack mdbase next e tira as duas regras de túnel dela.
 # Não apaga volumes (dados, certificado, objetos do log), nem .env.*, nem backup.key.
-# Tira só as regras desta pilha: o resto do config.yml (mudanças posteriores) fica.
+# Tira só as regras desta stack: o resto do config.yml (mudanças posteriores) fica.
 # O cloudflared não tem comando para apagar CNAME: os dois registros saem pelo painel da Cloudflare.
 set -euo pipefail
 umask 077
@@ -63,14 +63,14 @@ awk -v hosts="$HOSTS_NEXT" '
   }' "$CFG" > "$TMP"
 
 if cmp -s "$CFG" "$TMP"; then
-  log "nenhuma regra desta pilha no config.yml: nada a tirar"
+  log "nenhuma regra desta stack no config.yml: nada a tirar"
   estado_final
   exit 0
 fi
 
 cloudflared tunnel --config "$TMP" ingress validate || falha "config sem as regras reprovado: nada foi trocado"
 if grep -qE 'hostname:[[:space:]]*"?(next|next-log)\.madamelabs\.com\.br' "$TMP"; then
-  falha "ainda há regra desta pilha no config novo: nada foi trocado"
+  falha "ainda há regra desta stack no config novo: nada foi trocado"
 fi
 
 # Cópia datada, feita logo antes da gravação. A restauração usa esta cópia, não uma antiga.

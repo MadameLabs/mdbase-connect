@@ -1,4 +1,4 @@
-# Pilha "mdbase next" no Labs: pacote de instalação
+# Stack "mdbase next" no Labs: pacote de instalação
 
 Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor Labs, com o Arthur. Nenhum passo mexe em `/opt/mdbase-connect` nem no `mdbase-connect.service` do `mrlabs`.
 
@@ -8,7 +8,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | --- | --- |
 | `compose.yml` | projeto `mdbase-next`: `next-db`, `next-migrate`, `next-server` (`127.0.0.1:8800`), `next-log` (`127.0.0.1:8801`), rede `172.31.249.0/24` |
 | `instalar.sh` | instalação root, uma vez; idempotente |
-| `desfazer.sh` | derruba a pilha e tira só as duas regras de túnel |
+| `desfazer.sh` | derruba a stack e tira só as duas regras de túnel |
 | `backup.sh` | `pg_dump` dos dois bancos, contagem exata por tabela, cifrado com gpg, enviado ao R2 |
 | `mdbase-next-backup.service` e `.timer` | backup diário às 22:50 (horário local) |
 | `liberar-rede.sh` | ficha 2: põe `172.31.249.0/24` no `ISOLADAS` e recarrega, com volta automática |

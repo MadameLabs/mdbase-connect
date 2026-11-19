@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Inclui 172.31.249.0/24 (rede da pilha mdbase-next) no define ISOLADAS do
+# Inclui 172.31.249.0/24 (rede da stack mdbase-next) no define ISOLADAS do
 # /etc/nftables/laboratorio-rede.nft e recarrega o laboratorio-rede.service.
 # Roda como root, pelo Doctor. Idempotente. Em falha, volta o arquivo e recarrega.
 # Uso: bash liberar-rede.sh /home/mrlabs/mdbase-next/isolada.py

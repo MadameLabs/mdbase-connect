@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# instalar.sh: instala a pilha "mdbase next" no Labs.
+# instalar.sh: instala a stack "mdbase next" no Labs.
 # Roda como root, uma vez, pelo Doctor Labs, a partir de /home/mrlabs/mdbase-next (imagens e segredos ficam ali).
 # Idempotente: pode rodar de novo. .env.* existentes são mantidos; regras de túnel só são acrescentadas se faltarem.
 # Nunca mexe em /opt/mdbase-connect nem no mdbase-connect.service do mrlabs.
@@ -176,7 +176,7 @@ gunzip -c "$ORIGEM/imagens/$LOG_TAR" | docker load
 docker image inspect "$SERVER_IMG" "$LOG_IMG" >/dev/null
 log "imagens carregadas"
 
-# ---------------------------------------------------------------- 2. arquivos da pilha e segredos (0600, separados por serviço)
+# ---------------------------------------------------------------- 2. arquivos da stack e segredos (0600, separados por serviço)
 install -m 0644 -o root -g root "${AUX[compose.yml]}" "$DESTINO/compose.yml"
 install -m 0700 -o root -g root "${AUX[backup.sh]}" "$DESTINO/backup.sh"
 install -m 0700 -o root -g root "${AUX[desfazer.sh]}" "$DESTINO/desfazer.sh"
