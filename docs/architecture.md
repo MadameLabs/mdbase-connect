@@ -17,7 +17,7 @@ adding application behavior to the mdbase specification or the relay.
 Five trust zones make up the local-hosted path:
 
 1. An independently hosted frontend application.
-2. A hosted or self-hosted Connect control plane and transient relay.
+2. A hosted Connect control plane and transient relay.
 3. A user-owned connector daemon with a browser-only loopback service and
    outbound network connections.
 4. User-owned mdbase collections on the local filesystem.
@@ -144,8 +144,7 @@ collection deletion and authority transfer remain owner actions. Existing stored
 presets retain their exact authority until an explicit membership transition.
 
 Every member application grant and mirror binds the member, policy ID and revision.
-Direct mirror enrollment, browser/desktop pairing, and renewal use the same ceiling
-checks. A partial policy that the whole-collection mirror protocol cannot represent
+Direct mirror enrollment and renewal use the same ceiling checks. A partial policy that the whole-collection mirror protocol cannot represent
 is rejected. Token issuance rechecks current authority inside the collection
 transaction. Removal disables grants, tokens and pairing credentials locally, then
 uses the existing durable provider cleanup worker. Removal may supersede a pending
@@ -430,8 +429,7 @@ window so concurrent browser requests remain safe and usable.
 Every collection has one write authority:
 
 - a local connector for a filesystem-backed collection;
-- a hosted collection provider for the managed service;
-- a self-hosted provider implementing the same Connect API.
+- a hosted collection provider for the managed service.
 
 A hosted-authority folder may be mirrored into ordinary Markdown, but that
 folder cannot also be relayed by the local connector. Changing roles is an

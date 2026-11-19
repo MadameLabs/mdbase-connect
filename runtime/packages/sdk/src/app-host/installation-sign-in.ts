@@ -73,6 +73,10 @@ function portalMetadata(v: Record<string, unknown>, stored = false): PortalMetad
   }
   return {accountEmail: accountEmail(email), portalConfirmed: true};
 }
+function withoutPortalMetadata<T extends PortalMetadata>(value: T): T {
+  const {accountEmail: _email, portalConfirmed: _confirmed, accountProvider: _provider, accountLogin: _login, ...kept} = value;
+  return kept as T;
+}
 function assertOriginalPortal(before: PortalMetadata, after: PortalMetadata): void {
   if (before.portalConfirmed && (after.portalConfirmed !== true || before.accountEmail !== after.accountEmail || before.accountProvider !== after.accountProvider || before.accountLogin !== after.accountLogin)) throw fail("binding");
 }
@@ -542,7 +546,12 @@ export class AppProtectedInstallationSignIn {
         const requestId = crypto.randomUUID(), secret = `pair_${btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
         if (requestId === s.requestId || requestId === s.renewal?.requestId || secret === s.secret) throw fail("binding");
         const {requestSent: _sent, ...unsent} = s;
-        await this.save({...unsent, requestId, secret, renewal: {requestId:s.requestId, secret:s.secret}});
+        // Connect carries the chosen account into the renewed window but not the
+        // portal's confirmation of it: that belongs to the expired request. Keep
+        // the account (selected() still requires the SAME one) and wait for the
+        // renewed window's own confirmation.
+        const selection = s.selection ? withoutPortalMetadata(s.selection) : s.selection;
+        await this.save({...unsent, selection, requestId, secret, renewal: {requestId:s.requestId, secret:s.secret}});
         this.expiredRequestId = null;
         return await this.startRequest();
       } finally { bytes.fill(0); }
@@ -1076,14 +1085,18 @@ export class AppProtectedInstallationSignIn {
     const s = this.confirmedSelection(); if (installation.isCurrent() !== true || installation.scope.account !== s.accountId || installation.scope.installation !== s.installationId) throw fail("fenced");
   }
   /** Commit the explicit original native attempt BEFORE KEK/provider/keys/native.
-   * Once attempted, even missing/partial stores require EXISTING restore or visible
-   * recovery; never infer fresh from a null key/Noise record. */
+   * The durable proof decides the mode, never a null key/Noise record: once the
+   * device signed its enrolment (proof saved before the attest request), its
+   * keys are the installation's and only an EXISTING restore may use them.
+   * Before that nothing of the device has left this browser, so an attempt that
+   * was cut off (a reload, a closed tab, an aborted request) starts over FRESH
+   * from empty stores instead of being stuck with half of them. */
   prepareOriginalDevice(installation: AppInstallationCustodyAuthority): Promise<Readonly<{mode: "fresh" | "existing"; pin: AppDeviceKeyCustodyPin}>> {
     const callback = installation.isCurrent;
     const current = () => { try { this.check(); this.owned(installation); return installation.isCurrent === callback; } catch { return false; } };
     return this.exclusive(async () => {
       if (!current()) throw fail("fenced");
-      const mode = this.state.nativeStarted ? "existing" : "fresh";
+      const mode = this.state.proof ? "existing" : "fresh";
       if (!this.state.nativeStarted) await this.save({...this.state, nativeStarted: true});
       if (!current()) throw fail("fenced");
       return Object.freeze({mode, pin: Object.freeze({...this.confirmedSelection(), isCurrent: current, installationOwned: current})});

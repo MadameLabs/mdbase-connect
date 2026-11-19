@@ -170,16 +170,6 @@ folder. Output is human-readable; `--json` prints machine-readable results. Run 
 installation guide](docs/headless.md) for verified standalone installation,
 service operation and record commands.
 
-## Self-hosting
-
-mdbase connect is open-source, and advanced operators can run the control
-plane, relay, hosted collection provider, and MCP gateway themselves.
-Self-hosters are responsible for authentication, TLS, signing, upgrades,
-monitoring, backups, and incident response.
-
-Use an immutable beta release tag rather than `main`, and follow the
-[production self-hosting guide](docs/self-hosting.md).
-
 ## Contributing
 
 This repository contains the editor, desktop app, CLI and connector, browser
@@ -204,22 +194,12 @@ See the [CI flake policy](docs/ci-flakes.md) for bounded, recorded per-test
 retries and the retry-free nightly stress workflow.
 
 The end-to-end suites cover the runtime daemon's request path, the encrypted
-relay, hosted replication, and the production hosted provider:
+relay, and the production hosted provider:
 
 ```bash
 pnpm e2e
 pnpm e2e:relay
-pnpm e2e:sync
 pnpm e2e:provider
-```
-
-Seeded functional stress profiles cover concurrent replicas, lost responses,
-restarts, compaction, mirror convergence, scale, and soak behavior:
-
-```bash
-pnpm stress:quick
-pnpm stress:functional
-pnpm stress:soak:smoke
 ```
 
 To run the local development environment:
@@ -233,9 +213,8 @@ The desktop app runs on an mdbn-daemon build:
 `MDBN_DAEMON_BIN=<absolute path to mdbase> pnpm dev:desktop:fresh`.
 
 See [Testing](docs/testing-environment.md),
-[Functional stress testing](docs/functional-stress-testing.md),
-[Maintainability](docs/maintainability.md), [Releasing](docs/releasing.md), and
-[Production self-hosting](docs/self-hosting.md) for the complete workflows.
+[Maintainability](docs/maintainability.md), and [Releasing](docs/releasing.md)
+for the complete workflows.
 
 ## License
 
