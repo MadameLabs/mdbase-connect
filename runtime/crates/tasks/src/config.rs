@@ -23,6 +23,9 @@ pub struct TasksConfig {
     /// Glob patterns of the paths where project notes live (`*` matches within one
     /// path segment). Empty: every record of the `projeto` type is a project.
     pub project_paths: Vec<String>,
+    /// Folders (collection-relative) the gate's suggested `list` leaves out, one
+    /// `--fora-de` each.
+    pub gate_fora_de: Vec<String>,
 }
 
 impl TasksConfig {
@@ -80,12 +83,18 @@ impl TasksConfig {
             Some(value) => strings(value, "project_paths")?,
         };
 
+        let gate_fora_de = match obj.get("gate_fora_de") {
+            None => Vec::new(),
+            Some(value) => strings(value, "gate_fora_de")?,
+        };
+
         Ok(TasksConfig {
             required_on_create,
             people,
             refused_assignees,
             initial_status,
             project_paths,
+            gate_fora_de,
         })
     }
 }

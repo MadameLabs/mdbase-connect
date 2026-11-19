@@ -1366,3 +1366,61 @@ fn offset_of(date_time: &str) -> &str {
         None => &date_time[date_time.len() - 1..],
     }
 }
+
+/// Writes a task note in a folder that may not exist yet.
+fn task_file_in(root: &Path, rel: &str, title: &str) {
+    std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+    task_file(root, rel, title, "to-do");
+}
+
+#[test]
+fn list_fora_de_exclui_a_pasta() {
+    let f = fixture("tfo1", Some("{}"));
+    task_file_in(&f.root, "06-tarefas/Tasks/a.md", "A");
+    task_file_in(&f.root, "13-engenharia/ops/items/x/issue-1.md", "Issue 1");
+    let (code, v) = f.json(&["tasks", "list", "--fora-de", "13-engenharia/ops"]);
+    assert_eq!(code, 0, "{v}");
+    let list = v["result"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{v}");
+    assert_eq!(list[0]["path"], "06-tarefas/Tasks/a.md", "{v}");
+}
+
+#[test]
+fn list_fora_de_nao_corta_prefixo_parecido() {
+    let f = fixture("tfo2", Some("{}"));
+    task_file_in(&f.root, "06-tarefas/Tasks/a.md", "A");
+    task_file_in(&f.root, "13-engenharia/ops-antigo/b.md", "B");
+    task_file_in(&f.root, "13-engenharia/ops/c.md", "C");
+    let (code, v) = f.json(&["tasks", "list", "--fora-de", "13-engenharia/ops/"]);
+    assert_eq!(code, 0, "{v}");
+    let mut paths: Vec<&str> = v["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["path"].as_str().unwrap())
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        ["06-tarefas/Tasks/a.md", "13-engenharia/ops-antigo/b.md"],
+        "{v}"
+    );
+}
+
+#[test]
+fn gate_lista_com_fora_de_da_config() {
+    let f = fixture("tgfo", Some(r#"{"gate_fora_de":["13-engenharia/ops"]}"#));
+    let out = f.run_stdin(
+        &["tasks", "gate", "--agent", "claude"],
+        HOOK,
+        &[("USER", "ninguem")],
+    );
+    let v = gate_envelope(&out);
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ctx.contains("mdbase tasks list --responsavel <p> --fora-de 13-engenharia/ops -C "),
+        "{ctx}"
+    );
+}

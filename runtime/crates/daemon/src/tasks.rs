@@ -59,6 +59,9 @@ pub(crate) enum TasksCmd {
         /// Only the tasks with this status, open or closed.
         #[arg(long, value_name = "S")]
         status: Option<String>,
+        /// Leave out the tasks under this folder (repeatable; collection-relative).
+        #[arg(long = "fora-de", value_name = "PASTA")]
+        fora_de: Vec<String>,
     },
     /// A task's frontmatter and revision.
     Show {
@@ -502,8 +505,13 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
             target,
             responsavel,
             status,
+            fora_de,
         } => {
             let mut s = Session::open(&target, profile, false).await?;
+            let excluded: Vec<String> = fora_de
+                .iter()
+                .map(|d| format!("{}/", d.trim_end_matches('/')))
+                .collect();
             let people = match &responsavel {
                 Some(who) => Some(s.config_links(who)?),
                 None => None,
@@ -528,7 +536,8 @@ async fn execute(cmd: TasksCmd, profile: &Profile) -> Result<Value, Failure> {
                         .any(|a| links.contains(a)),
                     None => true,
                 };
-                if keep && mine {
+                let outside = !excluded.iter().any(|d| view.path.starts_with(d.as_str()));
+                if keep && mine && outside {
                     out.push(json!({
                         "path": view.path,
                         "status": text_of(&effective, s.binding.field("status")),
@@ -1593,12 +1602,17 @@ async fn gate_context(
         .map_or("<status de conclusão>", String::as_str)
         .to_string();
     let statuses = status_list(&stop_statuses(&s.binding));
+    let fora_de: String = config
+        .gate_fora_de
+        .iter()
+        .map(|d| format!(" --fora-de {d}"))
+        .collect();
     let mut parts = vec![
         format!("Gate TaskNotes obrigatório na coleção {raw}. Esta sessão não tem tarefa vinculada."),
         "Reclassifique a intenção a cada mensagem: o pedido em curso tem execução? Se tem, existe um artefato durável — briefing, design, especificação, plano ou tarefa direta — que a represente? O ciclo é detectar a intenção de execução, materializar o artefato durável, promover a nota a tarefa, iniciar o cronômetro, concluir a fase e avançar para o artefato seguinte.".to_string(),
         "Plan Mode e update_plan são camada efêmera da sessão: não criam tarefa por si sós e não substituem o artefato durável.".to_string(),
         format!("Fase terminada é encerrada com --status {closed} antes de a seguinte ser rastreada, para não haver duas tarefas simultâneas representando a mesma feature."),
-        format!("Listar: mdbase tasks list --responsavel {p} -C {c}"),
+        format!("Listar: mdbase tasks list --responsavel {p}{fora_de} -C {c}"),
         format!("Criar (nome: verbo + objeto, 2 a 4 palavras): mdbase tasks create \"TÍTULO\" --responsavel {p} --marca MARCA --projeto PROJETO -C {c}"),
         format!("Promover uma nota com execução: mdbase tasks promote \"CAMINHO_EXATO\" --responsavel {p} --marca Madame_Labs --projeto PROJETO -C {c}"),
         format!("Iniciar: mdbase tasks start \"CAMINHO_EXATO\" --responsavel {p} -C {c}"),
