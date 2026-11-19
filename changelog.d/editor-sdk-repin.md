@@ -1,3 +1,3 @@
 ## Changed
 
-- Pin the Editor to the original production SDK 0.1.0-beta.231 from 3320267c20074123b0bdc8950fa62245bf600322 and its byte-identical bundled protocol.
+- Pin the Editor to the original production SDK 0.1.18 from 29ed1fb2066f4d9618d38f93f14ac6fc0ba64464 and its byte-identical bundled protocol.

@@ -73,7 +73,7 @@ const LABELS: Record<MdbaseErrorAction, string | null> = {
 /** Every problem code an app can meet. Each has plain copy in COPY. */
 export const PROBLEM_CODES = [
   // Collection availability.
-  "device_offline", "desktop_update_required", "old_connector_running", "sync_required", "no_device_registered",
+  "device_offline", "device_not_serving", "desktop_update_required", "old_connector_running", "sync_required", "no_device_registered",
   "access_removed", "read_only", "capability_missing", "collection_deleted", "collection_unavailable", "moved_to_next_runtime", "device_approval_required",
   // Server outcomes.
   "collection_migrating", "collection_not_yet_migrated", "account_suspended", "update_required", "account_collection_quota_exceeded",
@@ -81,7 +81,7 @@ export const PROBLEM_CODES = [
   "invalid_request", "invalid_record", "not_found", "conflict", "unauthenticated", "forbidden", "collection_invalid",
   "unavailable", "rate_limited", "quota_exceeded", "too_large", "outcome_unknown", "internal",
   // Sign-in, open and sign-out.
-  "refused", "expired", "approval_window_closed", "account_confirmation_required", "recovery_required", "open_failed",
+  "refused", "expired", "approval_window_closed", "account_confirmation_required", "recovery_required", "open_failed", "device_keys_unavailable",
   "busy", "open_in_another_tab", "not_authorized", "sign_out_pending_writes", "sign_out_failed",
   // Application entry.
   "application_popup_blocked", "sign_in_window", "application_not_yet_available", "application_failed",
@@ -122,6 +122,7 @@ const UNFINISHED_SIGN_IN: Entry = ["Sign-in wasn't finished", "Access wasn't app
 const COPY = {
   // Private collections served by one of the account's computers (collection availability).
   device_offline: ["Your computer isn't online", "This collection is kept on your computer. Open the mdbase desktop app on a computer that has it, and this app connects as soon as it's online.", "wait", "info", true],
+  device_not_serving: ["Your computer can't open this collection", "Your computer is online, but mdbase there isn't serving this collection right now. Open the mdbase desktop app on that computer to see why. This app connects as soon as it can.", "wait", "warning", true],
   desktop_update_required: ["Update mdbase on your computer", "The mdbase desktop app on the computer that has this collection is out of date. Update it there, then try again.", "update_app", "warning", false, "Get the update"],
   old_connector_running: ["Quit the old mdbase Connect app", "The old mdbase Connect app is still running on the computer that has this collection. Quit it there (including its menu-bar or tray icon), then open the mdbase desktop app.", "retry", "warning"],
   sync_required: ["Give this app access again", "Access to this collection changed since you approved this app. Approve it again to keep using the collection.", "approve", "warning", false, "Approve again"],
@@ -159,6 +160,7 @@ const COPY = {
   recovery_account_mismatch: ["Use a different account", "Sign in with the account you originally used for this collection to continue.", "approve", "info", false, "Use a different account"],
   recovery_required: ["Reload required", "The app stopped to keep your data safe. Reload to continue.", "reload", "error"],
   open_failed: ["Couldn't open your collection", "Something went wrong while opening it. Reload the app to try again.", "reload", "error"],
+  device_keys_unavailable: ["Couldn't read this device's sign-in", "This browser couldn't open the keys this app uses to sign in to mdbase. Reload to try again. If it keeps happening, sign out of mdbase in this app and sign in again.", "reload", "error"],
   busy: BUSY,
   file_read_failed: ["Couldn't load the file", "mdbase couldn't finish downloading this file. Check your connection and try opening the collection again.", "retry", "warning"],
   file_read_idle: ["File download timed out", "The file download stopped making progress. Try opening the collection again.", "retry", "warning"],
@@ -249,7 +251,7 @@ const COPY = {
 /** Codes that mean the same outcome as a ProblemCode (server reasons, facet
  * and entry variants). Explicit: there is no suffix guessing. */
 const ALIASES: Readonly<Record<string, ProblemCode>> = Object.assign(Object.create(null) as Record<string, ProblemCode>, {
-  no_device_online: "device_offline", collection_moved: "moved_to_next_runtime", client_update_required: "update_required",
+  no_device_online: "device_offline", not_served: "device_not_serving", collection_moved: "moved_to_next_runtime", client_update_required: "update_required",
   upgrade_required: "update_required",
   // Compatibility details can be published without their upgrade_required wrapper.
   declared_setup_unsupported: "update_required", resource_setup_unsupported: "update_required",
@@ -348,6 +350,7 @@ export const INTERNAL_PROBLEM_CODES = [
 
 const DEVELOPER: Readonly<Record<string, string>> = Object.assign(Object.create(null) as Record<string, string>, {
   device_offline: "Collection availability device_offline: no device serving this Private collection is connected to the relay.",
+  device_not_serving: "Relay close not_served: the device holds a current grant for this Private collection but is not serving it (paused, opening, recovering or failed). Check the collection's status in mdbase on that computer; connect with waitForDevice keeps retrying.",
   desktop_update_required: "Collection availability desktop_update_required: the serving device's last relay connection was refused as incompatible.",
   old_connector_running: "Collection availability old_connector_running: the serving device reports a legacy connector still holding its collections.",
   device_approval_required: "Collection availability approval_required: no device has signed an approval for this app's grant yet.",
@@ -369,6 +372,7 @@ const DEVELOPER: Readonly<Record<string, string>> = Object.assign(Object.create(
   browser_unsupported: "browser_unsupported: the SDK's upfront capability probe found a required browser feature missing (Web Crypto/X25519, AbortSignal.any, Web Locks, BroadcastChannel, IndexedDB, Worker/MessageChannel or crypto.randomUUID); see the MdbaseError details for the missing tokens.",
   application_storage_unavailable: "application_storage_unavailable: navigator.storage.getDirectory() (OPFS) is absent or rejected, as in private browsing; the local replica cannot be kept on this device.",
   storage_may_be_evicted: "storage_may_be_evicted: replica edits are pending for at least 30 seconds or while disconnected on nonpersistent storage (`storage_may_be_evicted` in snapshot.sync.attention); only a log-confirmed receipt counts as saved.",
+  device_keys_unavailable: "device_keys_unavailable: this installation's device custody in IndexedDB (key encryption key, device keys or Noise vault) could not be opened or did not hold the attested device. Before attestation the SDK recreates it by itself; after attestation only signOut() and a fresh sign-in replace it.",
   sign_out_pending_writes: "sign_out_pending_writes: unconfirmed writes are still queued on this device; signOut({discard: true}) discards them.",
 });
 

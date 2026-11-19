@@ -11,7 +11,6 @@ import type {
   TypePackProvision
 } from "@mdbase-dev/connect-protocol";
 import {
-  CONNECT_CONTRACT_SUPPORT,
   HOSTED_CANDIDATE_B_ACTIVATION_CAPABILITY,
   HOSTED_PROVIDER_REQUIRED_CAPABILITIES,
   type ConnectContractSupport
@@ -29,6 +28,23 @@ export { HostedProviderResponseError, HostedProviderUnavailableError, type Legac
   type LegacyMigrationRollbackRequest, type LegacyMigrationRollbackEnvelope, type LegacyMigrationRollbackReceipt,
   type LegacyNotificationWatermark, type LegacyMigrationRetained } from "./hosted-provider-replies.js";
 export type { LegacyMigrationSource } from "./hosted-provider-legacy-migration.js";
+
+/**
+ * The contract versions the hosted provider must report before the control
+ * plane uses it.
+ *
+ * These are written out, not read from `CONNECT_CONTRACT_SUPPORT`. The provider
+ * is the legacy hosted service and stops being rebuilt, so a version the
+ * control plane later adds for the current runtime must not make the provider,
+ * and with it the control plane's own `/ready`, report as unavailable. Goes
+ * with this client when the legacy hosted provider is switched off.
+ */
+export const HOSTED_PROVIDER_REQUIRED_CONTRACT_SUPPORT: ConnectContractSupport = {
+  operation_transport: [3, 2],
+  authorization_binding: [5, 4],
+  semantic_capabilities: [2, 1],
+  durable_mutation: [1]
+};
 
 export interface HostedProviderConfig {
   url: string;
@@ -150,17 +166,6 @@ export interface HostedProtocolUsageReport {
   entries: HostedProtocolUsageEntry[];
   unbound_application_replicas: number;
   v2_recovery_application_replicas: number;
-}
-
-export interface HostedAuthorityTransfer {
-  id: string;
-  collection_id: string;
-  replica_id: string;
-  final_head: number;
-  authority_epoch: number;
-  manifest_digest: string;
-  state: "prepared" | "completed" | "aborted";
-  expires_at: string;
 }
 
 export interface HostedContractSetupResult {
@@ -617,30 +622,6 @@ export class HostedProviderClient {
     );
   }
 
-  async prepareAuthorityTransfer(
-    collectionId: string,
-    input: { transferId: string; replicaId: string; ttlSeconds: number }
-  ): Promise<HostedAuthorityTransfer> {
-    return await this.request(
-      "POST",
-      `/internal/v1/collections/${encodeURIComponent(collectionId)}/authority-transfers`,
-      {
-        transfer_id: input.transferId,
-        replica_id: input.replicaId,
-        ttl_seconds: input.ttlSeconds
-      }
-    ) as HostedAuthorityTransfer;
-  }
-
-  async completeAuthorityTransfer(transferId: string, manifestDigest: string): Promise<HostedAuthorityTransfer> {
-    return await this.request("POST", `/internal/v1/authority-transfers/${encodeURIComponent(transferId)}`,
-      { manifest_digest: manifestDigest }) as HostedAuthorityTransfer;
-  }
-
-  async abortAuthorityTransfer(transferId: string): Promise<HostedAuthorityTransfer> {
-    return await this.request("DELETE", `/internal/v1/authority-transfers/${encodeURIComponent(transferId)}`) as HostedAuthorityTransfer;
-  }
-
   async expireAuthorityTransfer(transferId: string, collectionId: string, authorityEpoch: number): Promise<void> {
     const result = await this.request("POST", `/internal/v1/authority-transfers/${encodeURIComponent(transferId)}/expire`, {
       collection_id: collectionId, authority_epoch: authorityEpoch
@@ -728,10 +709,11 @@ function hostedContractSupportMatches(value: unknown): value is ConnectContractS
   const includes = (axis: keyof ConnectContractSupport, required: readonly number[]) =>
     Array.isArray(support[axis])
     && required.every((version) => (support[axis] as unknown[]).includes(version));
-  return includes("operation_transport", CONNECT_CONTRACT_SUPPORT.operation_transport)
-    && includes("authorization_binding", CONNECT_CONTRACT_SUPPORT.authorization_binding)
-    && includes("semantic_capabilities", CONNECT_CONTRACT_SUPPORT.semantic_capabilities)
-    && includes("durable_mutation", CONNECT_CONTRACT_SUPPORT.durable_mutation);
+  const required = HOSTED_PROVIDER_REQUIRED_CONTRACT_SUPPORT;
+  return includes("operation_transport", required.operation_transport)
+    && includes("authorization_binding", required.authorization_binding)
+    && includes("semantic_capabilities", required.semantic_capabilities)
+    && includes("durable_mutation", required.durable_mutation);
 }
 
 function requiredProjectionStatus(
