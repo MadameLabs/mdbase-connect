@@ -3518,3 +3518,23 @@ fn mirror_marker_verification_and_removal_require_this_exact_mirror() {
     clear_mirror_marker(root, id).unwrap();
     assert!(!marker.exists());
 }
+
+#[tokio::test]
+async fn remote_rename_keeps_the_stored_record_path_consistent() {
+    let source = record("notes/example.md", "Example");
+    let (_temporary, mirror, authority) = harness(SyncReplicaMode::ReadWrite, vec![source.clone()]);
+    mirror.sync().await.unwrap();
+
+    let mut renamed = source.clone();
+    renamed.path = "notes/renamed.md".to_string();
+    authority.emit_put(renamed.clone());
+    mirror.sync().await.unwrap();
+
+    assert!(!mirror.root().join(&source.path).exists());
+    assert!(mirror.root().join(&renamed.path).exists());
+    let state = mirror.read_state().unwrap().unwrap();
+    let entry = &state.records[&renamed.record_id];
+    assert_eq!(entry.path, renamed.path);
+    assert_eq!(entry.record.as_ref().unwrap().path, renamed.path);
+    mirror.sync().await.unwrap();
+}

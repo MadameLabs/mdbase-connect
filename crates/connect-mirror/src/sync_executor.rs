@@ -174,6 +174,9 @@ impl DirectoryMirror {
                         if let Ok(identity) = Uuid::parse_str(&source.identity) {
                             if let Some(entry) = state.records.get_mut(&identity) {
                                 entry.path = target_path.clone();
+                                if let Some(record) = entry.record.as_mut() {
+                                    record.path = target_path.clone();
+                                }
                             }
                         }
                     }
