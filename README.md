@@ -1,3 +1,5 @@
+> **Fork maintained by [Madame Labs](https://github.com/MadameLabs) ([@engarthurcardoso](https://github.com/engarthurcardoso)).** Original project by Callum Alpass: [mdbase-dev/mdbase-connect](https://github.com/mdbase-dev/mdbase-connect). Report problems with this fork in [MadameLabs/mdbase-connect](https://github.com/MadameLabs/mdbase-connect/issues).
+
 # mdbase connect
 
 [![What mdbase does, in two minutes](https://mdbase.dev/videos/mdbase-in-two-minutes.jpg)](https://mdbase.dev/videos/mdbase-in-two-minutes.mp4)

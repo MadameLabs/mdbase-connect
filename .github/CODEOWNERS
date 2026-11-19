@@ -1,17 +1,17 @@
 # Default ownership keeps every change visible to the current maintainer.
-* @callumalpass
+* @engarthurcardoso
 
 # Security and release boundaries require an explicit owner.
-/.github/ @callumalpass
-/SECURITY.md @callumalpass
-/config/release-readiness.json @callumalpass
-/crates/connect-protocol/ @callumalpass
-/deploy/ @callumalpass
-/docs/encryption.md @callumalpass
-/docs/threat-model.md @callumalpass
-/packages/client/ @callumalpass
-/packages/protocol/ @callumalpass
-/services/server/src/features/auth/ @callumalpass
-/services/server/src/features/grants/ @callumalpass
-/services/server/src/features/relay/ @callumalpass
-/crates/connect-hosted-provider/ @callumalpass
+/.github/ @engarthurcardoso
+/SECURITY.md @engarthurcardoso
+/config/release-readiness.json @engarthurcardoso
+/crates/connect-protocol/ @engarthurcardoso
+/deploy/ @engarthurcardoso
+/docs/encryption.md @engarthurcardoso
+/docs/threat-model.md @engarthurcardoso
+/packages/client/ @engarthurcardoso
+/packages/protocol/ @engarthurcardoso
+/services/server/src/features/auth/ @engarthurcardoso
+/services/server/src/features/grants/ @engarthurcardoso
+/services/server/src/features/relay/ @engarthurcardoso
+/crates/connect-hosted-provider/ @engarthurcardoso
