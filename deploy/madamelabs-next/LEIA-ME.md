@@ -139,7 +139,7 @@ doctor-pedir -- bash /home/mrlabs/mdbase-next/backup-timer.sh /home/mrlabs/mdbas
 
 `backup-timer.sh` guarda o `.timer` instalado (`.antes.<data>`), instala o novo, faz `daemon-reload` e `restart` e mostra `list-timers` e o último sucesso. Esperado: próxima execução às 21:30. Com `--copiar-para-restauro`, copia o backup cifrado mais recente para `/home/mrlabs/restauro` (0600, do `mrlabs`). O Doctor não aceita `bash -c` nem quebra de linha no pedido. Volta: o mesmo comando com a cópia `.antes.<data>`.
 
-**Teste de restauração, no Arthur-PC, sem root.** Precisa de `docker` e `gpg`, do backup mais recente do R2 (bucket `mdbase-connect-backups`, prefixo `mdbase-next/`) e da `backup.key` (Bitwarden, `mdbase-next · chave de backup`), as duas em arquivo 0600 fora do repositório:
+**Teste de restauração, no Arthur-PC, sem root.** Precisa de `docker` e `gpg`, do backup mais recente do R2 (bucket `mdbase-connect-backups`, prefixo `mdbase-next/`) e da `backup.key` (Bitwarden, `mdbase-next · chave de backup`), as duas em arquivo 0600 fora do repositório. A nota do Bitwarden tem um título, uma linha em branco e a chave; o gpg lê só a primeira linha do arquivo, então guardar só a linha da chave (64 caracteres base64, `grep -E '^[A-Za-z0-9+/]{64}$'`). Apagar o arquivo da chave (`shred -u`) depois do teste:
 
 ```sh
 deploy/madamelabs-next/restaurar-teste.sh <mdbase-next-AAAAmmddTHHMMSSZ.tar.gz.gpg> <backup.key>
