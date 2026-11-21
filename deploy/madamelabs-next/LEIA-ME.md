@@ -10,7 +10,9 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `instalar.sh` | instalação root, uma vez; idempotente |
 | `desfazer.sh` | derruba a stack e tira só as duas regras de túnel |
 | `backup.sh` | `pg_dump` dos dois bancos, contagem exata por tabela, cifrado com gpg, enviado ao R2 |
-| `mdbase-next-backup.service` e `.timer` | backup diário às 22:50 (horário local) |
+| `mdbase-next-backup.service` e `.timer` | backup diário às 21:30 (horário local) |
+| `restaurar-teste.sh` | roda no Arthur-PC, sem root: decifra um backup, restaura num Postgres descartável e confere a contagem por tabela |
+| `restaurar-teste.test.sh` | teste do anterior, com backup sintético; não vai ao Labs |
 | `liberar-rede.sh` | ficha 2: põe `172.31.249.0/24` no `ISOLADAS` e recarrega, com volta automática |
 | `isolada.py` | confere pela tabela carregada que uma faixa está isolada (por cobertura) |
 | `log-backend.sh` | troca o backend do `next-log` entre memória e Postgres (só a linha `LOGSVC_BACKEND`) |
@@ -122,6 +124,28 @@ bash /home/mrlabs/mdbase-next/log-registro.sh /home/mrlabs/mdbase-next/imagens/m
 
 Confere o sha256 fixado no script, carrega a imagem, copia o `compose.yml` (`.antes-log-registro.<data>`), troca a imagem do log, põe `LOGSVC_BACKEND: pg` e `LOGSVC_PG_DELETION_REGISTRY: "1"` e sobe só o `next-log`. Exige `/ready` e `/health` 200 e a linha `"event":"deletion_registry"` no log; se faltar algo, volta o `compose.yml` e sobe o `next-log` como estava. O conteúdo do log em memória se perde: coleções da prova precisam ser recriadas.
 
+## Backup às 21:30 e teste de restauração
+
+O Labs dorme das ~23h às 6h30, e o backup das 22:50 corria o risco de não rodar. O timer passou para 21:30.
+
+**Ficha C, sem root:** atualizar o pacote em `/home/mrlabs/mdbase-next/` e rodar `sha256sum -c SHA256SUMS`.
+
+**Ficha D, root, pelo Doctor (o timer vai como argumento):**
+
+```sh
+doctor-pedir -- bash -c 'install -m 0644 -o root -g root "$1" /etc/systemd/system/mdbase-next-backup.timer && systemctl daemon-reload && systemctl restart mdbase-next-backup.timer && systemctl list-timers mdbase-next-backup.timer --no-pager' _ /home/mrlabs/mdbase-next/mdbase-next-backup.timer
+```
+
+Esperado: `list-timers` mostra a próxima execução às 21:30. Volta: o mesmo comando com o `.timer` anterior (22:50), do commit anterior.
+
+**Teste de restauração, no Arthur-PC, sem root.** Precisa de `docker` e `gpg`, do backup mais recente do R2 (bucket `mdbase-connect-backups`, prefixo `mdbase-next/`) e da `backup.key` (Bitwarden, `mdbase-next · chave de backup`), as duas em arquivo 0600 fora do repositório:
+
+```sh
+deploy/madamelabs-next/restaurar-teste.sh <mdbase-next-AAAAmmddTHHMMSSZ.tar.gz.gpg> <backup.key>
+```
+
+O script decifra, sobe `postgres:17-alpine` (a mesma imagem fixada do `next-db`) com `--network none` e `--rm`, restaura `mdbase_next` e `mdbase_next_log`, recalcula a contagem com a consulta do `backup.sh` e compara com o `contagem.tsv` do backup. Imprime a contagem por tabela e sai com 0 só se bater. O teste do próprio script: `deploy/madamelabs-next/restaurar-teste.test.sh`.
+
 ## Desfazer
 
 `sudo /opt/mdbase-next/desfazer.sh`: derruba o projeto (volumes ficam, `.env.*` e `backup.key` ficam), tira só as duas regras do `config.yml` (o resto, inclusive mudanças posteriores à instalação, fica), com cópia datada antes de gravar. Confere `cloudflared` e `connect /ready`; se algo falhar, restaura a cópia datada e imprime o estado. Os CNAMEs saem pelo painel da Cloudflare (o `cloudflared` não tem comando para apagar CNAME). A isolamento `172.31.249.0/24` no nftables não é desfeito pelo script: tirar à mão, com o backup `.antes-mdbase-next`, se for preciso.
@@ -140,6 +164,6 @@ Confere o sha256 fixado no script, carrega a imagem, copia o `compose.yml` (`.an
 - **TLS do Postgres:** autoassinado, 10 anos. Renovação: refazer o volume `next-tls` e reiniciar os três serviços.
 - **`MDBASE_CONNECT_IDENTITY_ISSUER`:** igual à `PUBLIC_URL`; confirmar com o Arthur.
 - **Registro:** `MDBASE_CONNECT_REGISTRATION=closed` fixo no compose. Conferir antes do primeiro login se o `ALLOWED_GOOGLE_SUBJECTS` copiado do Connect basta.
-- **Backup:** o molde `/opt/mdbase-connect/bin/backup` é root e não foi lido. `backup.sh` segue a descrição do `estado-atual-labs.md`. Conferir bucket (`mdbase-connect-backups`, prefixo `mdbase-next/`), endpoint e variáveis `MDBASE_CONNECT_R2_*`. Retenção de 30 dias no R2 não está no script (regra de ciclo de vida no bucket). Restauração não testada: restaurar num Postgres descartável antes de confiar.
+- **Backup:** o molde `/opt/mdbase-connect/bin/backup` é root e não foi lido. `backup.sh` segue a descrição do `estado-atual-labs.md`. Conferir bucket (`mdbase-connect-backups`, prefixo `mdbase-next/`), endpoint e variáveis `MDBASE_CONNECT_R2_*`. Retenção de 30 dias no R2 não está no script (regra de ciclo de vida no bucket). Restauração: testar com `restaurar-teste.sh` (seção abaixo).
 - **Política de confiança expira em 2027-11-17** (`servidor.env`); o servidor recusa com menos de 7 dias.
 - **Formato de saída do `cloudflared ingress rule`:** o script procura `http://127.0.0.1:<porta>` na saída. Conferir no primeiro uso.

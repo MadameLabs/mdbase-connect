@@ -2,8 +2,8 @@
 Description=Backup diario da stack mdbase next
 
 [Timer]
-# Horário local do Labs (22:50). O backup do Connect fica às 22:40.
-OnCalendar=*-*-* 22:50:00
+# Horário local do Labs (21:30): antes do Labs dormir (~23h) e longe do backup do Connect (22:40).
+OnCalendar=*-*-* 21:30:00
 Persistent=true
 
 [Install]
