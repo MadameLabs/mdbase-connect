@@ -657,7 +657,15 @@ pub(crate) async fn open(target: &Target, profile: &Profile) -> Result<Transport
     in_process(&root)
 }
 
-/// A host session on the daemon's replica endpoint, once the collection is ready.
+/// Whether a listed collection state is one the daemon serves sessions in.
+/// `Syncing` is only an observed form of `Ready` (see
+/// [`CollectionState::observed`]): the collection is serving, with sync work
+/// unfinished, so a session must not be refused for it.
+fn serving(state: CollectionState) -> bool {
+    matches!(state, CollectionState::Ready | CollectionState::Syncing)
+}
+
+/// A host session on the daemon's replica endpoint, once the collection is serving.
 async fn daemon(profile: &Profile, mut status: CollectionStatus) -> Result<Transport, ClientError> {
     let deadline = tokio::time::Instant::now() + OPENING_TIMEOUT;
     while status.state == CollectionState::Opening && tokio::time::Instant::now() < deadline {
@@ -665,7 +673,7 @@ async fn daemon(profile: &Profile, mut status: CollectionStatus) -> Result<Trans
         let list = crate::cli::collections(profile).await?;
         status = crate::cli::pick(&list, &status.id)?.clone();
     }
-    if status.state != CollectionState::Ready {
+    if !serving(status.state) {
         return Err(not_ready(&status).into());
     }
     let collection = crate::attest::uuid_bytes(&status.id)
@@ -1554,28 +1562,5 @@ pub(crate) fn to_wire(v: &Value) -> WireValue {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn folder_state_dir_is_the_default_without_the_variable() {
-        assert_eq!(folder_state_dir_in(None, Path::new("/srv/vault")), None);
-    }
-
-    #[test]
-    fn folder_state_dir_gives_each_folder_its_own_subdir() {
-        let base = std::ffi::OsString::from("/home/u/.local/state/mdbase-folders");
-        let a = folder_state_dir_in(
-            Some(base.clone()),
-            Path::new("/storage/emulated/0/BIBLIOTECA"),
-        )
-        .unwrap();
-        let b = folder_state_dir_in(Some(base), Path::new("/storage/emulated/0/OUTRA")).unwrap();
-        assert!(a.starts_with("/home/u/.local/state/mdbase-folders"));
-        assert_eq!(a.parent(), b.parent());
-        assert_ne!(a, b);
-        // One plain name under the base, never a path that leaves it.
-        assert_eq!(a.components().count(), b.components().count());
-        assert!(!a.file_name().unwrap().to_string_lossy().contains('/'));
-    }
-}
+#[path = "data_tests.rs"]
+mod tests;
