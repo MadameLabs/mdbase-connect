@@ -11,6 +11,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `desfazer.sh` | derruba a stack e tira só as duas regras de túnel |
 | `backup.sh` | `pg_dump` dos dois bancos, contagem exata por tabela, cifrado com gpg, enviado ao R2 |
 | `mdbase-next-backup.service` e `.timer` | backup diário às 21:30 (horário local) |
+| `backup-timer.sh` | root, pelo Doctor: instala o `.timer` do backup e, opcionalmente, copia o backup mais recente para o teste de restauração |
 | `restaurar-teste.sh` | roda no Arthur-PC, sem root: decifra um backup, restaura num Postgres descartável e confere a contagem por tabela |
 | `restaurar-teste.test.sh` | teste do anterior, com backup sintético; não vai ao Labs |
 | `liberar-rede.sh` | ficha 2: põe `172.31.249.0/24` no `ISOLADAS` e recarrega, com volta automática |
@@ -133,10 +134,10 @@ O Labs dorme das ~23h às 6h30, e o backup das 22:50 corria o risco de não roda
 **Ficha D, root, pelo Doctor (o timer vai como argumento):**
 
 ```sh
-doctor-pedir -- bash -c 'install -m 0644 -o root -g root "$1" /etc/systemd/system/mdbase-next-backup.timer && systemctl daemon-reload && systemctl restart mdbase-next-backup.timer && systemctl list-timers mdbase-next-backup.timer --no-pager' _ /home/mrlabs/mdbase-next/mdbase-next-backup.timer
+doctor-pedir -- bash /home/mrlabs/mdbase-next/backup-timer.sh /home/mrlabs/mdbase-next/mdbase-next-backup.timer --copiar-para-restauro
 ```
 
-Esperado: `list-timers` mostra a próxima execução às 21:30. Volta: o mesmo comando com o `.timer` anterior (22:50), do commit anterior.
+`backup-timer.sh` guarda o `.timer` instalado (`.antes.<data>`), instala o novo, faz `daemon-reload` e `restart` e mostra `list-timers` e o último sucesso. Esperado: próxima execução às 21:30. Com `--copiar-para-restauro`, copia o backup cifrado mais recente para `/home/mrlabs/restauro` (0600, do `mrlabs`). O Doctor não aceita `bash -c` nem quebra de linha no pedido. Volta: o mesmo comando com a cópia `.antes.<data>`.
 
 **Teste de restauração, no Arthur-PC, sem root.** Precisa de `docker` e `gpg`, do backup mais recente do R2 (bucket `mdbase-connect-backups`, prefixo `mdbase-next/`) e da `backup.key` (Bitwarden, `mdbase-next · chave de backup`), as duas em arquivo 0600 fora do repositório:
 
