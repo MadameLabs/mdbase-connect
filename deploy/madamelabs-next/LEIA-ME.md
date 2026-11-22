@@ -169,7 +169,7 @@ Depois da ficha G, o Arthur guarda no Bitwarden (`mdbase-next · provedor hosted
 
 ## Convites entre contas (prova da migração, Task 4)
 
-Uma coleção Private nativa ganha membro de outra conta pelo convite (`POST /v1/hosted/collections/:id/invitations`, pelo portal ou pela API). O servidor só monta essas rotas com `MDBASE_CONNECT_HOSTED_COLLECTIONS=1`, `MDBASE_CONNECT_HOSTED_SHARING_ENABLED=1` e um provedor hosted. Não temos provedor, e o modo de referência exige autenticação de desenvolvimento, então o script aponta o provedor para `http://127.0.0.1:9`, onde nada responde. Criar coleção hosted falha, que é o esperado.
+Uma coleção Private nativa ganha membro de outra conta pelo convite (`POST /v1/hosted/collections/:id/invitations`, pelo portal ou pela API). O servidor só monta essas rotas com `MDBASE_CONNECT_HOSTED_COLLECTIONS=1`, `MDBASE_CONNECT_HOSTED_SHARING_ENABLED=1` e um provedor hosted que responda ao `/ready`: o `next-hosted-provider` da seção anterior, que precisa estar de pé (ficha G) antes desta. O script aponta o servidor para `http://127.0.0.1:8790` com o token interno do `.env.provedor`. Recriar o servidor tira a rede do provedor, então ele recria os dois juntos.
 
 **Ficha C, sem root:** atualizar o pacote em `/home/mrlabs/mdbase-next/` e rodar `sha256sum -c SHA256SUMS`.
 
@@ -179,7 +179,7 @@ Uma coleção Private nativa ganha membro de outra conta pelo convite (`POST /v1
 doctor-pedir -- bash /home/mrlabs/mdbase-next/ligar-convites.sh ligar
 ```
 
-Guarda o `.env.servidor` em `.env.servidor.antes-convites`, acrescenta as quatro linhas, recria o `next-server` e espera o `/ready`. Se o servidor não voltar, restaura a cópia sozinho. Esperado no fim: `GET …/invitations=401` (rota montada, pede login) e `ok: convites montados`. **Volta**, depois da prova ou se algo der errado:
+Guarda o `.env.servidor` em `.env.servidor.antes-convites`, acrescenta as quatro linhas, recria o `next-server` e o `next-hosted-provider` e espera o `/ready` dos dois. Se o servidor não voltar, restaura a cópia sozinho. Esperado no fim: `GET …/invitations=401` (rota montada, pede login) e `ok: convites montados`. **Volta**, depois da prova ou se algo der errado:
 
 ```sh
 doctor-pedir -- bash /home/mrlabs/mdbase-next/ligar-convites.sh desligar
