@@ -6,7 +6,8 @@
 #   2. r2-provedor.env com CR (fim de linha do Windows) é recusado;
 #   3. a imagem é conferida e carregada de uma cópia fora da pasta do mrlabs;
 #   4. rodar de novo com .env.provedor existente e r2-provedor.env novo troca as quatro linhas
-#      do R2, mantém o resto, recria o provedor e apaga o r2-provedor.env.
+#      do R2, mantém o resto, recria o provedor e apaga o r2-provedor.env;
+#   5. o compose.yml do pacote pode ser qualquer versão da lista aceita (provedor, gateway MCP).
 set -euo pipefail
 AQUI=$(cd "$(dirname "$0")" && pwd)
 RAIZ=$(mktemp -d)
@@ -52,10 +53,10 @@ r2() {
     "MDBASE_CONNECT_R2_ACCESS_KEY_ID=$1" "MDBASE_CONNECT_R2_SECRET_ACCESS_KEY=$2" > "$RAIZ/origem/r2-provedor.env"
 }
 roda() {
-  env PATH="$STUB/bin:$PATH" LIGAR_PROVEDOR_TESTE_RAIZ="$RAIZ" \
+  LISTA_NOVO=${LISTA_NOVO:-} env PATH="$STUB/bin:$PATH" LIGAR_PROVEDOR_TESTE_RAIZ="$RAIZ" \
     TESTE_SHA_IMG="$(sha256sum "$TAR" | cut -d' ' -f1)" \
     TESTE_SHA_COMPOSE_ANTES="$(sha256sum "$RAIZ/opt/compose.yml" | cut -d' ' -f1)" \
-    TESTE_SHA_COMPOSE_NOVO="$(sha256sum "$RAIZ/compose-novo.yml" | cut -d' ' -f1)" \
+    TESTE_SHA_COMPOSE_NOVO="${LISTA_NOVO:-$(sha256sum "$RAIZ/compose-novo.yml" | cut -d' ' -f1)}" \
     bash "$AQUI/ligar-provedor.sh" "$RAIZ/compose-novo.yml" > "$RAIZ/saida.log" 2>&1
 }
 
@@ -94,6 +95,12 @@ if roda; then
     ok "R2 novo: linhas trocadas, resto mantido, provedor recriado, arquivo apagado"
   else cat "$RAIZ/saida.log"; nok "R2 novo: não aplicado como esperado"; fi
 else cat "$RAIZ/saida.log"; nok "R2 novo: exit diferente de 0"; fi
+
+# 5. lista de versões aceitas do compose.yml
+LISTA_NOVO="0000000000000000000000000000000000000000000000000000000000000000 $(sha256sum "$RAIZ/compose-novo.yml" | cut -d' ' -f1)"
+if LISTA_NOVO=$LISTA_NOVO roda; then ok "lista de compose aceitos: versão da lista aceita"
+else cat "$RAIZ/saida.log"; nok "lista de compose aceitos: recusou uma versão da lista"; fi
+unset LISTA_NOVO
 
 grep -rqE 'PRIMEIRO-SEGREDO|SEGUNDO-SEGREDO' "$RAIZ/saida.log" && nok "segredo impresso na saída" || ok "nenhum segredo na saída"
 exit $falhou

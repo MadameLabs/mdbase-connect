@@ -30,7 +30,9 @@ SHA_IMG=8ce4c4830486306bba08a77ca262e82052454891f55c3c11f89fc6c5e69ef97f
 # compose.yml anterior: o do pacote em 0c74e1b1 e o instalado no Labs (difere só na 1ª linha,
 # "Pilha" em vez de "Stack"). E o deste pacote.
 SHA_COMPOSE_ANTES="23b73add204411c266f58f9915a6b1dd45f44a014964487ce9a9cc21ab2d9a1c 317756e9e200cf57b62fb94cf8a6cb15459c8a71bfe3e994bb11d2db2d3fa364"
-SHA_COMPOSE_NOVO=e6c028ed476b6a509eacea509d22689d0d834463f74ac2fc079d97db963dc19d
+# Versões aceitas do compose.yml do pacote que já trazem o provedor: a do provedor (fork 24cc085b)
+# e a do gateway MCP (fork e2254a53 em diante). Qualquer uma pode ser a em uso.
+SHA_COMPOSE_NOVO="e6c028ed476b6a509eacea509d22689d0d834463f74ac2fc079d97db963dc19d 277a2d016e214d1862c939b6c2de94eb7944ca1b00eb68739be066aebd77bc9a"
 R2=$ORIGEM/r2-provedor.env
 ENV_PROVEDOR=$DESTINO/.env.provedor
 DATA=$(date +%Y%m%d-%H%M%S)
@@ -60,9 +62,10 @@ fi
 [ $# -eq 1 ] || falha "uso: ligar-provedor.sh <compose.yml>"
 COMPOSE_NOVO=$1
 [ -f "$COMPOSE_NOVO" ] || falha "$COMPOSE_NOVO não existe"
-echo "$SHA_COMPOSE_NOVO  $COMPOSE_NOVO" | sha256sum -c --quiet - || falha "sha256 do compose.yml não confere"
+SHA_PACOTE=$(sha256sum "$COMPOSE_NOVO" | cut -d' ' -f1)
+[[ " $SHA_COMPOSE_NOVO " == *" $SHA_PACOTE "* ]] || falha "sha256 do compose.yml não confere"
 ATUAL=$(sha256sum "$DESTINO/compose.yml" | cut -d' ' -f1)
-[[ " $SHA_COMPOSE_ANTES " == *" $ATUAL "* ]] || [ "$ATUAL" = "$SHA_COMPOSE_NOVO" ] \
+[[ " $SHA_COMPOSE_ANTES $SHA_COMPOSE_NOVO " == *" $ATUAL "* ]] \
 	|| falha "o compose.yml em $DESTINO não é o do pacote anterior; conferir à mão"
 [ -f "$TAR" ] || falha "imagem ausente: $TAR"
 # A pasta é do mrlabs: confere e carrega de uma cópia do root, para o arquivo não trocar no meio.
@@ -133,7 +136,7 @@ if [ "$(psql_db -tAc "SELECT 1 FROM pg_database WHERE datname='mdbase_next_hoste
 fi
 
 COPIA=""
-if [ "$ATUAL" != "$SHA_COMPOSE_NOVO" ]; then
+if [ "$ATUAL" != "$SHA_PACOTE" ]; then
 	COPIA=$DESTINO/compose.yml.antes-provedor.$DATA
 	cp -p "$DESTINO/compose.yml" "$COPIA"
 	install -m 0644 "${DONO[@]}" "$COMPOSE_NOVO" "$DESTINO/compose.yml"
