@@ -32,7 +32,7 @@ const APROVACAO: &str = "aprovacao";
 const EM_ANDAMENTO: &str = "em-andamento";
 
 /// The review reasons, in the order the queue lists them.
-const REASONS: [&str; 7] = [
+const REASONS: [&str; 8] = [
     "desfecho_ausente",
     "retomada_vencida",
     "pausa_sem_retomada",
@@ -40,6 +40,7 @@ const REASONS: [&str; 7] = [
     "status_desconhecido",
     "parado",
     "aguardando_aprovacao",
+    "sem_prioridade",
 ];
 
 /// Plans a status change of a project. Returns the `update` op.
@@ -498,6 +499,14 @@ fn reason_for(item: &ProjectItem, today: &str, limite: &str) -> Option<&'static 
     }
     if status == Some(APROVACAO) {
         return Some("aguardando_aprovacao");
+    }
+    // `nenhuma` means "not triaged yet", the same as a missing field.
+    if item
+        .priority
+        .as_deref()
+        .is_none_or(|p| p.is_empty() || p == "nenhuma")
+    {
+        return Some("sem_prioridade");
     }
     None
 }

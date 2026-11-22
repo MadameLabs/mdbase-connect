@@ -31,8 +31,7 @@ fn merged(base: Value, extra: Value) -> Map<String, Value> {
 
 /// A project note under the brand folder `a`, active and owned by Arthur by default.
 fn projeto(name: &str, extra: Value) -> TaskView {
-    let base =
-        json!({"type": "projeto", "brand": "[[A]]", "status": "em-andamento", "owner": ARTHUR});
+    let base = json!({"type": "projeto", "brand": "[[A]]", "status": "em-andamento", "owner": ARTHUR, "priority": "normal"});
     TaskView {
         path: format!("02-marcas/a/Projetos/{name}.md"),
         revision: "rev-1".to_string(),
@@ -543,6 +542,36 @@ fn o_resumo_traz_o_proximo_marco() {
     assert_eq!(
         item(&s, "p").next_milestone_date.as_deref(),
         Some("2026-12-01")
+    );
+}
+
+#[test]
+fn fila_cobra_prioridade_por_ultimo_e_so_de_projeto_aberto() {
+    let s = summary(
+        &[
+            projeto("vazio", json!({"status": "to-do", "priority": null})),
+            projeto("nenhuma", json!({"status": "to-do", "priority": "nenhuma"})),
+            projeto(
+                "pausado",
+                json!({"status": "pausa", "outcome": "x", "resumeOn": "2026-12-01", "priority": null}),
+            ),
+            projeto(
+                "fechado",
+                json!({"status": "concluido", "outcome": "x", "priority": null}),
+            ),
+            projeto("orfao", json!({"owner": null, "priority": null})),
+            projeto("ok", json!({"status": "to-do"})),
+        ],
+        &[],
+    );
+    assert_eq!(
+        pairs(&queue(&s.items)),
+        [
+            ("orfao".to_string(), "sem_responsavel"),
+            ("nenhuma".to_string(), "sem_prioridade"),
+            ("pausado".to_string(), "sem_prioridade"),
+            ("vazio".to_string(), "sem_prioridade"),
+        ]
     );
 }
 
