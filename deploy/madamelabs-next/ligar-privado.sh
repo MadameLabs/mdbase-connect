@@ -38,11 +38,15 @@ else
 fi
 
 docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next up -d next-server
+# O provedor hosted fica na rede do servidor: recriar o servidor exige recriá-lo (se instalado).
+if [ -f /opt/mdbase-next/.env.provedor ]; then docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next up -d --force-recreate next-hosted-provider; fi
 for _ in $(seq 60); do [ "$(codigo GET /ready)" = 200 ] && break; sleep 2; done
 if [ "$(codigo GET /ready)" != 200 ]; then
 	docker logs --tail 15 "$C" 2>&1 | sed -E 's/((key|secret|token|password)[^=:]*[=:])[^ ,}"]+/\1<oculto>/Ig'
 	cp -p "$ENV_SERVIDOR.antes-privado" "$ENV_SERVIDOR"
 	docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next up -d next-server
+	# O provedor hosted fica na rede do servidor: recriar o servidor exige recriá-lo (se instalado).
+	if [ -f /opt/mdbase-next/.env.provedor ]; then docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next up -d --force-recreate next-hosted-provider; fi
 	falha "next-server não voltou com as rotas Private; .env.servidor restaurado"
 fi
 L=$(codigo GET /v1/next/collections); P=$(codigo POST /v1/next/collections/private)

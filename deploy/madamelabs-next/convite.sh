@@ -36,6 +36,8 @@ case "${1:-}" in
 			cp -p "$ENV_SERVIDOR" "$ENV_SERVIDOR.antes-termos"
 			printf 'MDBASE_CONNECT_TERMS_URL=%s\nMDBASE_CONNECT_PRIVACY_URL=%s\n' "$TERMOS" "$PRIVACIDADE" >> "$ENV_SERVIDOR"
 			docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next up -d next-server
+			# O provedor hosted fica na rede do servidor: recriar o servidor exige recriá-lo (se instalado).
+			if [ -f /opt/mdbase-next/.env.provedor ]; then docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next up -d --force-recreate next-hosted-provider; fi
 			for _ in $(seq 60); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8800/ready)" = 200 ] && break; sleep 2; done
 			[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8800/ready)" = 200 ] || falha "next-server não voltou depois de ler os termos"
 			docker inspect -f '{{.State.Running}}' "$C" | grep -qx true || falha "$C parou"

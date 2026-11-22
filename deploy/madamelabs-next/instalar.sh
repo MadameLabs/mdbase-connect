@@ -260,6 +260,8 @@ docker run --rm -u 0 -v "${PROJETO}_next-log-objects:/d" --entrypoint sh "$LOG_I
 
 # next-server depende de next-migrate (service_completed_successfully): o Compose roda a migração antes.
 dc up -d next-server next-log
+# O provedor hosted fica na rede do servidor: recriar o servidor exige recriá-lo (se instalado).
+if [ -f /opt/mdbase-next/.env.provedor ]; then dc up -d --force-recreate next-hosted-provider; fi
 espera_saudavel next-server
 espera_http "http://127.0.0.1:$PORTA_SERVER/ready" '^200$' 120
 espera_http "http://127.0.0.1:$PORTA_LOG/health" '^200$' 120
