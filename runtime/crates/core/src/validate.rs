@@ -228,7 +228,12 @@ pub fn cross_record_issues(state: &dyn StateView, id: crate::ids::RecordId) -> V
                 }
             }
             Resolution::Record(target) => {
-                if let Some(want) = rule.and_then(|r| r.target_type.as_ref())
+                // `any` é o que o TaskNotes grava para "qualquer tipo" (`projects[]`,
+                // `occurrence_template`); a spec não define curinga, então é tratado como
+                // ausência de regra em vez de nome de tipo.
+                if let Some(want) = rule
+                    .and_then(|r| r.target_type.as_ref())
+                    .filter(|t| !t.eq_ignore_ascii_case("any"))
                     && let Some(t) = state.record(&target)
                 {
                     let tdoc = crate::doc::Document::parse_at(&t.path, &*t.source);
