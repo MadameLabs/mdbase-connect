@@ -18,6 +18,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `isolada.py` | confere pela tabela carregada que uma faixa está isolada (por cobertura) |
 | `log-backend.sh` | troca o backend do `next-log` entre memória e Postgres (só a linha `LOGSVC_BACKEND`) |
 | `log-registro.sh` | leva o `next-log` à imagem `.2` com o registro de exclusões em Postgres, com volta automática |
+| `ligar-convites.sh` | root, pelo Doctor: liga ou desliga as rotas de convite de coleção (`ligar` / `desligar`), com cópia do `.env.servidor` e volta automática |
 | `SHA256SUMS` | hashes dos arquivos acima |
 
 ## Verificação do pacote (antes de rodar qualquer coisa)
@@ -146,6 +147,24 @@ deploy/madamelabs-next/restaurar-teste.sh <mdbase-next-AAAAmmddTHHMMSSZ.tar.gz.g
 ```
 
 O script decifra, sobe `postgres:17-alpine` (a mesma imagem fixada do `next-db`) com `--network none` e `--rm`, restaura `mdbase_next` e `mdbase_next_log`, recalcula a contagem com a consulta do `backup.sh` e compara com o `contagem.tsv` do backup. Imprime a contagem por tabela e sai com 0 só se bater. O teste do próprio script: `deploy/madamelabs-next/restaurar-teste.test.sh`.
+
+## Convites entre contas (prova da migração, Task 4)
+
+Uma coleção Private nativa ganha membro de outra conta pelo convite (`POST /v1/hosted/collections/:id/invitations`, pelo portal ou pela API). O servidor só monta essas rotas com `MDBASE_CONNECT_HOSTED_COLLECTIONS=1`, `MDBASE_CONNECT_HOSTED_SHARING_ENABLED=1` e um provedor hosted. Não temos provedor, e o modo de referência exige autenticação de desenvolvimento, então o script aponta o provedor para `http://127.0.0.1:9`, onde nada responde. Criar coleção hosted falha, que é o esperado.
+
+**Ficha C, sem root:** atualizar o pacote em `/home/mrlabs/mdbase-next/` e rodar `sha256sum -c SHA256SUMS`.
+
+**Ficha E, root, pelo Doctor:**
+
+```sh
+doctor-pedir -- bash /home/mrlabs/mdbase-next/ligar-convites.sh ligar
+```
+
+Guarda o `.env.servidor` em `.env.servidor.antes-convites`, acrescenta as quatro linhas, recria o `next-server` e espera o `/ready`. Se o servidor não voltar, restaura a cópia sozinho. Esperado no fim: `GET …/invitations=401` (rota montada, pede login) e `ok: convites montados`. **Volta**, depois da prova ou se algo der errado:
+
+```sh
+doctor-pedir -- bash /home/mrlabs/mdbase-next/ligar-convites.sh desligar
+```
 
 ## Desfazer
 
