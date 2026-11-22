@@ -37,14 +37,18 @@ ps -d mdbase_next -c "create table next_contas(id int primary key); insert into 
 ps -d mdbase_next -c "create role mdbase_next_hosted nologin"
 ps -d mdbase_next -c 'create database mdbase_next_hosted owner mdbase_next_hosted'
 ps -d mdbase_next_hosted -c "set role mdbase_next_hosted; create table hp_colecoes(id int primary key); insert into hp_colecoes select generate_series(1,5);"
+ps -d mdbase_next -c "create role mdbase_next_mcp nologin"
+ps -d mdbase_next -c 'create database mdbase_next_mcp owner mdbase_next_mcp'
+ps -d mdbase_next_mcp -c "set role mdbase_next_mcp; create table mcp_write_audit(id int primary key); insert into mcp_write_audit select generate_series(1,3);"
 ps -d mdbase_next_log -c "create table ls_registros(id bigserial primary key, b bytea); insert into ls_registros(b) select '\\x00'::bytea from generate_series(1,123);"
 
 mkdir "$TMP/fonte"
 docker exec "$NOME" pg_dump -Fc -U mdbase_next -d mdbase_next > "$TMP/fonte/mdbase_next.dump"
 docker exec "$NOME" pg_dump -Fc -U mdbase_next -d mdbase_next_log > "$TMP/fonte/mdbase_next_log.dump"
 docker exec "$NOME" pg_dump -Fc -U mdbase_next -d mdbase_next_hosted > "$TMP/fonte/mdbase_next_hosted.dump"
+docker exec "$NOME" pg_dump -Fc -U mdbase_next -d mdbase_next_mcp > "$TMP/fonte/mdbase_next_mcp.dump"
 {
-  for banco in mdbase_next mdbase_next_log mdbase_next_hosted; do
+  for banco in mdbase_next mdbase_next_log mdbase_next_hosted mdbase_next_mcp; do
     echo "== $banco"
     docker exec "$NOME" psql -v ON_ERROR_STOP=1 -U mdbase_next -d "$banco" -tAF $'\t' -c "$CONTAGEM_SQL"
   done
@@ -68,7 +72,7 @@ cifra "$TMP/antigo" "$TMP/antigo.tar.gz.gpg"
 
 if bash "$AQUI/restaurar-teste.sh" "$TMP/integro.tar.gz.gpg" "$TMP/backup.key" > "$TMP/s1.log" 2>&1; then
   grep -q $'next_contas\t7' "$TMP/s1.log" && grep -q $'ls_registros\t123' "$TMP/s1.log" \
-    && grep -q $'hp_colecoes\t5' "$TMP/s1.log" \
+    && grep -q $'hp_colecoes\t5' "$TMP/s1.log" && grep -q $'mcp_write_audit\t3' "$TMP/s1.log" \
     && ok "íntegro: exit 0 e contagens impressas, com o banco do provedor" || { cat "$TMP/s1.log"; nok "íntegro: exit 0 sem as contagens"; }
 else cat "$TMP/s1.log"; nok "íntegro: exit diferente de 0"; fi
 

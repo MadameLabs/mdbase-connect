@@ -9,7 +9,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `compose.yml` | projeto `mdbase-next`: `next-db`, `next-migrate`, `next-server` (`127.0.0.1:8800`), `next-log` (`127.0.0.1:8801`), rede `172.31.249.0/24` |
 | `instalar.sh` | instalação root, uma vez; idempotente |
 | `desfazer.sh` | derruba a stack e tira só as duas regras de túnel |
-| `backup.sh` | `pg_dump` dos três bancos (`mdbase_next`, `mdbase_next_log` e, desde 2026-11-22, `mdbase_next_hosted`), contagem exata por tabela, cifrado com gpg, enviado ao R2 |
+| `backup.sh` | `pg_dump` de `mdbase_next` e `mdbase_next_log` e, quando existem, dos opcionais `mdbase_next_hosted` e `mdbase_next_mcp` (desde 2026-11-22), contagem exata por tabela, cifrado com gpg, enviado ao R2 |
 | `mdbase-next-backup.service` e `.timer` | backup diário às 21:30 (horário local) |
 | `backup-timer.sh` | root, pelo Doctor: instala o `.timer` do backup e, opcionalmente, copia o backup mais recente para o teste de restauração |
 | `restaurar-teste.sh` | roda no Arthur-PC, sem root: decifra um backup, restaura num Postgres descartável e confere a contagem por tabela |
@@ -19,6 +19,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `log-backend.sh` | troca o backend do `next-log` entre memória e Postgres (só a linha `LOGSVC_BACKEND`) |
 | `log-registro.sh` | leva o `next-log` à imagem `.2` com o registro de exclusões em Postgres, com volta automática |
 | `atualizar-backup.sh` | root, pelo Doctor: troca só o `backup.sh` instalado (cópia `.antes.<data>`); recusa o de três bancos antes de o `mdbase_next_hosted` existir |
+| `mcp-instalar.sh` | root, pelo Doctor: sobe o gateway MCP (`next-mcp`, banco `mdbase_next_mcp`) e publica `mcp-next.madamelabs.com.br` pelo túnel, com volta automática |
 | `ligar-provedor.sh` | root, pelo Doctor: carrega a imagem do provedor hosted, cria o banco `mdbase_next_hosted`, gera o `.env.provedor` e sobe o `next-hosted-provider` na rede do servidor |
 | `ligar-convites.sh` | root, pelo Doctor: liga ou desliga as rotas de convite de coleção (`ligar` / `desligar`), com cópia do `.env.servidor` e volta automática |
 | `SHA256SUMS` | hashes dos arquivos acima |
@@ -175,6 +176,22 @@ doctor-pedir -- bash /home/mrlabs/mdbase-next/atualizar-backup.sh /home/mrlabs/m
 ```
 
 Esperado: `ok: backup.sh instalado`. No dia seguinte, conferir o backup das 21:30 com o `restaurar-teste.sh` no Arthur-PC: a saída lista as tabelas do `mdbase_next_hosted`. Volta: o mesmo comando com o `/opt/mdbase-next/backup.sh.antes.<data>`.
+
+## Gateway MCP (plano de migração, Task 6)
+
+`next-mcp` (imagem `mdbase-next-mcp:0.1.0-mdbaselabs.1`, de `deploy/docker/Dockerfile.mcp` na `madamelabs/stack-next`, 4,4 GB carregada) com a migração `next-mcp-migrate`, banco `mdbase_next_mcp` no `next-db` (papel próprio, `sslmode=verify-full` com a CA da stack) e `/opt/mdbase-next/.env.mcp` (0600: `DATABASE_URL` e `MDBASE_MCP_MASTER_KEY`). Porta `127.0.0.1:8802`, publicada pelo túnel em `https://mcp-next.madamelabs.com.br/mcp`. O banco guarda os clientes OAuth e o registro de escritas (`mcp_write_audit`), e o backup o inclui.
+
+**Ficha F de novo, sem root:** atualizar o pacote e pôr `mdbase-next-mcp-0.1.0-mdbaselabs.1.tar.gz` em `imagens/`; `sha256sum -c SHA256SUMS`.
+
+**Ficha I, root, pelo Doctor:**
+
+```sh
+doctor-pedir -- bash /home/mrlabs/mdbase-next/mcp-instalar.sh /home/mrlabs/mdbase-next/compose.yml
+```
+
+Esperado: `ok: https://mcp-next.madamelabs.com.br/mcp responde o desafio OAuth; connect e next 200`. Se falhar depois de mexer, volta o `config.yml` do `cloudflared`, tira o `next-mcp` e volta o `compose.yml`. O `.env.mcp` e o banco ficam. Depois, a ficha H de novo (`atualizar-backup.sh`), para o backup das 21:30 incluir o `mdbase_next_mcp`.
+
+**Depois, com o Arthur:** acrescentar `mcp-next.` à regra do WAF "So Brasil - ntfy e next" e guardar a `MDBASE_MCP_MASTER_KEY` no Bitwarden (`mdbase next · mcp master key`), lendo-a no Labs **fora do Claude** (`ssh -t labs sudo less /opt/mdbase-next/.env.mcp`).
 
 ## Convites entre contas (prova da migração, Task 4)
 

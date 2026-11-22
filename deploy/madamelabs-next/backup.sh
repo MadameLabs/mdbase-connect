@@ -37,18 +37,28 @@ dc() { docker compose -p "$PROJETO" -f compose.yml --project-directory "$DESTINO
 
 dc exec -T next-db pg_dump -Fc -U mdbase_next -d mdbase_next > "$TMP/mdbase_next.dump"
 dc exec -T next-db pg_dump -Fc -U mdbase_next -d mdbase_next_log > "$TMP/mdbase_next_log.dump"
-dc exec -T next-db pg_dump -Fc -U mdbase_next -d mdbase_next_hosted > "$TMP/mdbase_next_hosted.dump"
+# Bancos opcionais (provedor hosted, gateway MCP): só entram se existirem, para a falta de um
+# não derrubar o backup dos principais.
+BANCOS=(mdbase_next mdbase_next_log)
+for opcional in mdbase_next_hosted mdbase_next_mcp; do
+  if [ "$(dc exec -T next-db psql -U mdbase_next -d mdbase_next -tAc "SELECT 1 FROM pg_database WHERE datname='$opcional'")" = 1 ]; then
+    dc exec -T next-db pg_dump -Fc -U mdbase_next -d "$opcional" > "$TMP/$opcional.dump"
+    BANCOS+=("$opcional")
+  else
+    echo "aviso: banco $opcional ausente; backup sem ele" >&2
+  fi
+done
 
 # Contagem exata por tabela (SELECT count(*) real, via query_to_xml), como no backup do Connect.
 CONTAGEM_SQL="SELECT table_name, (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text AS linhas FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY 1"
 {
-  for banco in mdbase_next mdbase_next_log mdbase_next_hosted; do
+  for banco in "${BANCOS[@]}"; do
     echo "== $banco"
     dc exec -T next-db psql -v ON_ERROR_STOP=1 -U mdbase_next -d "$banco" -tAF $'\t' -c "$CONTAGEM_SQL"
   done
 } > "$TMP/contagem.tsv"
 
-tar -C "$TMP" -czf - mdbase_next.dump mdbase_next_log.dump mdbase_next_hosted.dump contagem.tsv \
+tar -C "$TMP" -czf - $(printf '%s.dump ' "${BANCOS[@]}") contagem.tsv \
   | gpg --batch --yes --pinentry-mode loopback --passphrase-file "$CHAVE" \
         --symmetric --cipher-algo AES256 --output "$LOCAL/$nome"
 

@@ -4,6 +4,7 @@
 #   .env.db       senha do Postgres (só o next-db recebe)
 #   .env.servidor variáveis do servidor + DATABASE_URL (servidor e migração; nunca LOGSVC_*)
 #   .env.log      LOGSVC_* + LOGSVC_PG_URL (só o log; nunca variáveis do servidor)
+#   .env.mcp      gateway MCP: DATABASE_URL próprio e MDBASE_MCP_MASTER_KEY (gerado pelo mcp-instalar.sh)
 #   .env.provedor provedor hosted: DATABASE_URL próprio, chave mestra, token interno, R2 (gerado pelo ligar-provedor.sh)
 # Cada env_file é required: false para que "docker compose down" funcione sem eles.
 # Nenhum valor real fica neste arquivo. Imagens são carregadas com docker load (sem build no Labs).
@@ -14,6 +15,9 @@ x-server-image: &server-image
 
 x-log-image: &log-image
   image: mdbase-next-log:0.1.0-mdbaselabs.2
+
+x-mcp-image: &mcp-image
+  image: mdbase-next-mcp:0.1.0-mdbaselabs.1
 
 x-provider-image: &provider-image
   image: mdbase-next-hosted-provider:0.1.0-mdbaselabs.1
@@ -152,6 +156,69 @@ services:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8790/ready"]
       interval: 10s
       timeout: 5s
+      retries: 12
+    mem_limit: 256m
+    restart: unless-stopped
+
+  # Gateway MCP (Miss Labs, Enola): banco mdbase_next_mcp no next-db, porta só em 127.0.0.1,
+  # publicado pelo túnel em mcp-next.madamelabs.com.br. mcp-instalar.sh sobe os dois.
+  next-mcp-migrate:
+    <<: *mcp-image
+    command: ["node", "services/mcp/dist/migrate.js"]
+    env_file:
+      - path: ./.env.mcp
+        required: false
+    environment:
+      <<: *tls-env
+    volumes:
+      - next-tls:/tls:ro
+    networks:
+      - next
+    depends_on:
+      next-db:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    restart: "no"
+
+  next-mcp:
+    <<: *mcp-image
+    env_file:
+      - path: ./.env.mcp
+        required: false
+    environment:
+      <<: *tls-env
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8790"
+      PUBLIC_URL: https://mcp-next.madamelabs.com.br
+      MDBASE_CONNECT_URL: https://next.madamelabs.com.br
+      MDBASE_MCP_TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:8802:8790"
+    volumes:
+      - next-tls:/tls:ro
+    networks:
+      - next
+    depends_on:
+      next-mcp-migrate:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
       retries: 12
     mem_limit: 256m
     restart: unless-stopped

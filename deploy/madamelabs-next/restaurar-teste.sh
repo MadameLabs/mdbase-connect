@@ -34,14 +34,18 @@ gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$CHAVE" \
 mkdir "$TMP/x"
 tar -C "$TMP/x" -xzf "$TMP/backup.tar.gz" mdbase_next.dump mdbase_next_log.dump contagem.tsv \
   || falha "o arquivo não tem mdbase_next.dump, mdbase_next_log.dump e contagem.tsv"
-# O banco do provedor hosted entrou no backup em 2026-11-22; backups anteriores não o têm.
+# Bancos opcionais, cada um do seu papel: o do provedor hosted e o do gateway MCP entraram no
+# backup em 2026-11-22; backups anteriores (ou de antes de cada serviço) não os têm.
 BANCOS=(mdbase_next mdbase_next_log)
-if tar -tzf "$TMP/backup.tar.gz" | grep -qx 'mdbase_next_hosted.dump'; then
-  tar -C "$TMP/x" -xzf "$TMP/backup.tar.gz" mdbase_next_hosted.dump
-  BANCOS+=(mdbase_next_hosted)
-else
-  echo "aviso: backup sem mdbase_next_hosted (anterior ao provedor hosted); restaurando dois bancos"
-fi
+OPCIONAIS=()
+for banco in mdbase_next_hosted mdbase_next_mcp; do
+  if tar -tzf "$TMP/backup.tar.gz" | grep -qx "$banco.dump"; then
+    tar -C "$TMP/x" -xzf "$TMP/backup.tar.gz" "$banco.dump"
+    BANCOS+=("$banco"); OPCIONAIS+=("$banco")
+  else
+    echo "aviso: backup sem $banco; restaurando sem ele"
+  fi
+done
 
 docker run -d --rm --name "$NOME" --network none \
   -e POSTGRES_USER=mdbase_next -e POSTGRES_DB=mdbase_next \
@@ -57,12 +61,12 @@ done
 
 docker exec "$NOME" psql -v ON_ERROR_STOP=1 -q -U mdbase_next -d mdbase_next -c 'create database mdbase_next_log' \
   || falha "não criou mdbase_next_log"
-if [[ " ${BANCOS[*]} " == *" mdbase_next_hosted "* ]]; then
-  # O banco do provedor é do papel mdbase_next_hosted; sem login, só para manter a propriedade.
+for banco in "${OPCIONAIS[@]}"; do
+  # Cada banco opcional é do papel de mesmo nome; sem login, só para manter a propriedade.
   docker exec "$NOME" psql -v ON_ERROR_STOP=1 -q -U mdbase_next -d mdbase_next \
-    -c 'create role mdbase_next_hosted nologin' -c 'create database mdbase_next_hosted owner mdbase_next_hosted' \
-    || falha "não criou mdbase_next_hosted"
-fi
+    -c "create role $banco nologin" -c "create database $banco owner $banco" \
+    || falha "não criou $banco"
+done
 for banco in "${BANCOS[@]}"; do
   docker exec -i "$NOME" pg_restore --exit-on-error -U mdbase_next -d "$banco" < "$TMP/x/$banco.dump" \
     || falha "pg_restore de $banco falhou"
