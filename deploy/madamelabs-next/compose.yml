@@ -4,6 +4,7 @@
 #   .env.db       senha do Postgres (só o next-db recebe)
 #   .env.servidor variáveis do servidor + DATABASE_URL (servidor e migração; nunca LOGSVC_*)
 #   .env.log      LOGSVC_* + LOGSVC_PG_URL (só o log; nunca variáveis do servidor)
+#   .env.provedor provedor hosted: DATABASE_URL próprio, chave mestra, token interno, R2 (gerado pelo ligar-provedor.sh)
 # Cada env_file é required: false para que "docker compose down" funcione sem eles.
 # Nenhum valor real fica neste arquivo. Imagens são carregadas com docker load (sem build no Labs).
 name: mdbase-next
@@ -13,6 +14,9 @@ x-server-image: &server-image
 
 x-log-image: &log-image
   image: mdbase-next-log:0.1.0-mdbaselabs.2
+
+x-provider-image: &provider-image
+  image: mdbase-next-hosted-provider:0.1.0-mdbaselabs.1
 
 x-tls-env: &tls-env
   NODE_EXTRA_CA_CERTS: /tls/ca.crt
@@ -121,6 +125,35 @@ services:
       timeout: 3s
       retries: 12
     mem_limit: 512m
+    restart: unless-stopped
+
+  # Provedor hosted: só existe para o servidor ligar os convites entre contas. Fica na rede do
+  # contêiner do servidor e escuta em 127.0.0.1:8790 (HOST no .env.provedor), que o servidor
+  # aceita como loopback. Sem ports e sem networks próprios. Recriar o next-server exige
+  # recriar este também (ligar-convites.sh faz os dois).
+  next-hosted-provider:
+    <<: *provider-image
+    network_mode: service:next-server
+    env_file:
+      - path: ./.env.provedor
+        required: false
+    depends_on:
+      next-server:
+        condition: service_started
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8790/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 256m
     restart: unless-stopped
 
   next-log:

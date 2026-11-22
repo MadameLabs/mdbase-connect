@@ -18,6 +18,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `isolada.py` | confere pela tabela carregada que uma faixa está isolada (por cobertura) |
 | `log-backend.sh` | troca o backend do `next-log` entre memória e Postgres (só a linha `LOGSVC_BACKEND`) |
 | `log-registro.sh` | leva o `next-log` à imagem `.2` com o registro de exclusões em Postgres, com volta automática |
+| `ligar-provedor.sh` | root, pelo Doctor: carrega a imagem do provedor hosted, cria o banco `mdbase_next_hosted`, gera o `.env.provedor` e sobe o `next-hosted-provider` na rede do servidor |
 | `ligar-convites.sh` | root, pelo Doctor: liga ou desliga as rotas de convite de coleção (`ligar` / `desligar`), com cópia do `.env.servidor` e volta automática |
 | `SHA256SUMS` | hashes dos arquivos acima |
 
@@ -147,6 +148,24 @@ deploy/madamelabs-next/restaurar-teste.sh <mdbase-next-AAAAmmddTHHMMSSZ.tar.gz.g
 ```
 
 O script decifra, sobe `postgres:17-alpine` (a mesma imagem fixada do `next-db`) com `--network none` e `--rm`, restaura `mdbase_next` e `mdbase_next_log`, recalcula a contagem com a consulta do `backup.sh` e compara com o `contagem.tsv` do backup. Imprime a contagem por tabela e sai com 0 só se bater. O teste do próprio script: `deploy/madamelabs-next/restaurar-teste.test.sh`.
+
+## Provedor hosted (pré-requisito dos convites)
+
+Design e plano na base: `provedor-hosted-na-stack-next-design` e `provedor-hosted-na-stack-next`. O servidor só liga os convites entre contas com um provedor hosted de verdade. O `next-hosted-provider` não guarda coleção nenhuma: fica na rede do contêiner do servidor (`network_mode: service:next-server`), escuta em `127.0.0.1:8790` e usa o banco `mdbase_next_hosted` do `next-db`, com usuário próprio. Memória medida no Arthur-PC: cerca de 7 MiB ocioso (`mem_limit` de 256 MiB).
+
+**Antes, no painel da Cloudflare (Arthur):** criar o bucket R2 `mdbase-next-hosted` e um token de API R2 com "Object Read & Write" só nesse bucket. O endpoint é o mesmo do Connect (`https://<conta>.r2.cloudflarestorage.com`). No Labs, como `mrlabs`, escrever `/home/mrlabs/mdbase-next/r2-provedor.env` (0600) com exatamente quatro linhas: `MDBASE_CONNECT_R2_ENDPOINT=…`, `MDBASE_CONNECT_R2_BUCKET=mdbase-next-hosted`, `MDBASE_CONNECT_R2_ACCESS_KEY_ID=…` e `MDBASE_CONNECT_R2_SECRET_ACCESS_KEY=…`. Esse arquivo nunca vai no argv, porque o Doctor mostra o argv ao Toxy. O script o lê do caminho fixo e o apaga com `shred` no fim.
+
+**Ficha F, sem root:** atualizar o pacote em `/home/mrlabs/mdbase-next/`, pôr `mdbase-next-hosted-provider-0.1.0-mdbaselabs.1.tar.gz` em `imagens/` e rodar `sha256sum -c SHA256SUMS`.
+
+**Ficha G, root, pelo Doctor:**
+
+```sh
+doctor-pedir -- bash /home/mrlabs/mdbase-next/ligar-provedor.sh /home/mrlabs/mdbase-next/compose.yml
+```
+
+Confere o sha256 da imagem e do `compose.yml` e confere que o `compose.yml` em uso é o anterior. Carrega a imagem, cria o papel e o banco, gera o `/opt/mdbase-next/.env.provedor` (0600) se faltar, instala o `compose.yml` (cópia `compose.yml.antes-provedor.<data>`) e sobe só o provedor. Esperado: `ok: provedor pronto em 127.0.0.1:8790 na rede do next-server`. Se o `/ready` não vier, ele tira o provedor e volta o `compose.yml`, mas o `.env.provedor` e o banco ficam para a próxima tentativa. **Volta manual:** `docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next rm -sf next-hosted-provider` e o `compose.yml.antes-provedor.<data>`.
+
+Depois da ficha G, o Arthur guarda no Bitwarden (`mdbase-next · provedor hosted`) a chave mestra e o token interno do `.env.provedor` e as credenciais do R2.
 
 ## Convites entre contas (prova da migração, Task 4)
 
