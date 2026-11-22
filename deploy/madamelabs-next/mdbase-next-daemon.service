@@ -16,7 +16,7 @@ ExecStart=/home/mrlabs/mdbase-next/bin/mdbase-next --state-dir /home/mrlabs/.loc
 Restart=always
 RestartSec=5
 TimeoutStopSec=20
-MemoryMax=384M
+MemoryMax=512M
 NoNewPrivileges=true
 PrivateTmp=true
 

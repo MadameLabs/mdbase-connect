@@ -32,7 +32,7 @@ Pela SSH (Tailscale), o `XDG_RUNTIME_DIR` vem vazio. Passar `/run/user/1000`, ig
 ## Estado em 2026-11-22
 
 - Coleção "Prova next migracao" (`fd9326a2-…`) em `/home/mrlabs/mdbase-next/prova-migracao`: `ready`, `online`, `pending 0`, 41 arquivos com o mesmo hash da máquina A do Arthur-PC. Aprovada pela A (código 788532).
-- Memória do daemon: 13 MiB (`MemoryMax=384M`). Labs com 2,5 GiB disponíveis.
+- Memória do daemon: 13 MiB em repouso; pico de 292 MiB com a BIBLIOTECA inteira no ensaio do dia (`MemoryMax=512M`, era 384M). Labs com 2,5 GiB disponíveis.
 - Ao lado: `connect.madamelabs.com.br/ready` 200 e o espelho da BIBLIOTECA `up to date`.
 
 ## Cuidados
