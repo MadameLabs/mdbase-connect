@@ -350,7 +350,54 @@ fn renamex(root: &Root, a: &RelPath, b: &RelPath, flags: RenameFlags) -> io::Res
 }
 
 pub(crate) fn exchange(root: &Root, a: &RelPath, b: &RelPath) -> io::Result<()> {
-    renamex(root, a, b, RenameFlags::EXCHANGE)
+    match renamex(root, a, b, RenameFlags::EXCHANGE) {
+        Err(e) if exchange_fallback() && no_exchange(&e) => exchange_by_copy(root, a, b),
+        r => r,
+    }
+}
+
+/// `MDBASE_EXCHANGE_FALLBACK=copy` (MadameLabs fork): on a volume without
+/// `RENAME_EXCHANGE` or `syncfs` (Android's shared storage, a FUSE mount,
+/// answers EINVAL and ENOENT), publish with [`exchange_by_copy`] and a plain
+/// `fsync` instead of staying read-only. Opt-in, because the swap is then no
+/// longer atomic: a writer that changes the target between the copy and the
+/// rename loses those bytes.
+fn exchange_fallback() -> bool {
+    std::env::var_os("MDBASE_EXCHANGE_FALLBACK").is_some_and(|v| v == "copy")
+}
+
+/// Whether `e` says the volume has no swap primitive, as opposed to refusing
+/// this one.
+fn no_exchange(e: &io::Error) -> bool {
+    [Errno::INVAL, Errno::NOSYS, Errno::OPNOTSUPP]
+        .iter()
+        .any(|c| e.raw_os_error() == Some(c.raw_os_error()))
+}
+
+/// `a` ↔ `b` without `RENAME_EXCHANGE`: `b`'s bytes go to a side file next to
+/// `a`, `a` is renamed over `b` (atomic: `b` is never missing nor half written)
+/// and the side file takes `a`'s name. `a` ends with a copy of `b`, on a new
+/// inode, where a real swap moves `b`'s own inode; a missing `b` is NotFound
+/// and changes nothing, as with the real swap.
+fn exchange_by_copy(root: &Root, a: &RelPath, b: &RelPath) -> io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    let mut old = Vec::new();
+    open_read(root, b)?.read_to_end(&mut old)?;
+    let side = a
+        .parent()
+        .join(&format!("{}.xchg", a.file_name()))
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let _ = remove_file(root, &side);
+    {
+        let mut f = create_new(root, &side)?;
+        f.write_all(&old)?;
+        f.sync_all()?;
+    }
+    if let Err(e) = renamex(root, a, b, RenameFlags::empty()) {
+        let _ = remove_file(root, &side);
+        return Err(e);
+    }
+    renamex(root, &side, a, RenameFlags::empty())
 }
 
 pub(crate) fn rename_noreplace(root: &Root, a: &RelPath, b: &RelPath) -> io::Result<()> {
@@ -415,23 +462,45 @@ pub(crate) fn file_meta(f: &fs::File) -> io::Result<FileMeta> {
 
 /// Swap two paths in the private probe (absolute paths, not collection paths).
 fn exchange_paths(a: &Path, b: &Path) -> io::Result<()> {
-    Ok(renameat_with(
+    match renameat_with(
         rustix::fs::CWD,
         a,
         rustix::fs::CWD,
         b,
         RenameFlags::EXCHANGE,
-    )?)
+    ) {
+        Ok(()) => Ok(()),
+        Err(e) if exchange_fallback() && no_exchange(&e.into()) => {
+            // The probe's own pair, by path: the same emulation as exchange_by_copy.
+            let side = a.with_extension("xchg");
+            fs::write(&side, fs::read(b)?)?;
+            fs::rename(a, b)?;
+            fs::rename(&side, a)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `syncfs`, or with [`exchange_fallback`] a plain `fsync` of the root where
+/// the volume has no `syncfs`.
+#[cfg(target_os = "linux")]
+fn sync_volume(root: &Path) -> io::Result<()> {
+    let dir = fs::File::open(root)?;
+    match rustix::fs::syncfs(&dir) {
+        Ok(()) => Ok(()),
+        Err(_) if exchange_fallback() => dir.sync_all(),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn barrier(root: &Path) -> io::Result<()> {
-    Ok(rustix::fs::syncfs(fs::File::open(root)?)?)
+    sync_volume(root)
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn full_sync(root: &Path) -> io::Result<()> {
-    Ok(rustix::fs::syncfs(fs::File::open(root)?)?)
+    sync_volume(root)
 }
 
 #[cfg(target_os = "macos")]
@@ -576,5 +645,72 @@ impl Locks {
     }
     pub(crate) fn unlock(&self, _h: LockHandle) -> FsResult<()> {
         Err(FsError::unsupported("unlock"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "mdbn-platform-native-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(d.join("x")).unwrap();
+        d
+    }
+
+    fn rp(s: &str) -> RelPath {
+        RelPath::new(s).unwrap()
+    }
+
+    #[test]
+    fn exchange_by_copy_swaps_the_contents_and_leaves_no_side_file() {
+        let d = scratch("xchg");
+        fs::write(d.join("x/a"), b"new").unwrap();
+        fs::write(d.join("x/b"), b"old").unwrap();
+        let root = Root::open(&d).unwrap();
+        exchange_by_copy(&root, &rp("x/a"), &rp("x/b")).unwrap();
+        assert_eq!(fs::read(d.join("x/b")).unwrap(), b"new");
+        assert_eq!(fs::read(d.join("x/a")).unwrap(), b"old");
+        assert!(!d.join("x/a.xchg").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn exchange_by_copy_onto_a_missing_target_is_not_found_and_changes_nothing() {
+        let d = scratch("xchg-gone");
+        fs::write(d.join("x/a"), b"new").unwrap();
+        let root = Root::open(&d).unwrap();
+        let e = exchange_by_copy(&root, &rp("x/a"), &rp("x/b")).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        assert_eq!(fs::read(d.join("x/a")).unwrap(), b"new");
+        assert!(!d.join("x/b").exists());
+        assert!(!d.join("x/a.xchg").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn only_a_missing_swap_primitive_counts_as_no_exchange() {
+        assert!(no_exchange(&io::Error::from_raw_os_error(
+            Errno::INVAL.raw_os_error()
+        )));
+        assert!(no_exchange(&io::Error::from_raw_os_error(
+            Errno::NOSYS.raw_os_error()
+        )));
+        assert!(no_exchange(&io::Error::from_raw_os_error(
+            Errno::OPNOTSUPP.raw_os_error()
+        )));
+        assert!(!no_exchange(&io::Error::from_raw_os_error(
+            Errno::ACCESS.raw_os_error()
+        )));
+        assert!(!no_exchange(&io::Error::from_raw_os_error(
+            Errno::NOENT.raw_os_error()
+        )));
     }
 }

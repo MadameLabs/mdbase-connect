@@ -280,6 +280,24 @@ fn locks_unsupported(e: &io::Error) -> bool {
     }
 }
 
+/// Without OS locks, whether the descriptor's holder may still host the folder.
+/// A library process on this machine that died mid-command (killed with its
+/// terminal, the app reinstalled under it) never removes its descriptor, and
+/// nothing would release it: its pid is checked in `/proc`. Every other host
+/// counts as alive, since a paused mobile host still owns the folder.
+fn holder_may_live(d: &Descriptor) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if d.host == HostKind::Library
+            && let Some(pid) = d.pid
+        {
+            return Path::new("/proc").join(pid.to_string()).exists();
+        }
+    }
+    let _ = d;
+    true
+}
+
 impl HostLock {
     /// Try to take the folder lock without waiting, then publish `descriptor`
     /// (if given). `private` is the private dir name, usually `.mdbase`.
@@ -308,7 +326,9 @@ impl HostLock {
                 return Err(LockError::Held(read_descriptor_in(&dir)));
             }
             Err(std::fs::TryLockError::Error(e)) if locks_unsupported(&e) => {
-                if let Some(d) = read_descriptor_in(&dir) {
+                if let Some(d) = read_descriptor_in(&dir)
+                    && holder_may_live(&d)
+                {
                     return Err(LockError::Held(Some(d)));
                 }
             }
@@ -351,7 +371,7 @@ impl HostLock {
             }
             Err(std::fs::TryLockError::WouldBlock) => Ok(true),
             Err(std::fs::TryLockError::Error(e)) if locks_unsupported(&e) => {
-                Ok(read_descriptor_in(&dir).is_some())
+                Ok(read_descriptor_in(&dir).is_some_and(|d| holder_may_live(&d)))
             }
             Err(std::fs::TryLockError::Error(e)) => Err(LockError::Io(e)),
         }
@@ -524,6 +544,31 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn without_os_locks_only_a_live_or_foreign_holder_refuses() {
+        let mut ours = Descriptor::new(HostKind::Library, 1);
+        assert!(holder_may_live(&ours), "this process is alive");
+        #[cfg(target_os = "linux")]
+        {
+            // A library process killed mid-command (the app reinstalled under it).
+            ours.pid = Some(u32::MAX - 1);
+            assert!(!holder_may_live(&ours));
+        }
+        ours.pid = None;
+        assert!(holder_may_live(&ours), "no pid, no way to tell");
+        let obsidian = Descriptor {
+            host: HostKind::Obsidian,
+            pid: Some(u32::MAX - 1),
+            device: None,
+            since_ms: 5,
+            heartbeat_ms: 5,
+        };
+        assert!(
+            holder_may_live(&obsidian),
+            "a paused mobile host still owns the folder"
+        );
     }
 
     #[test]
