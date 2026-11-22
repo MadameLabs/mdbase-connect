@@ -262,9 +262,33 @@ fn open_no_follow(path: &Path, create: bool) -> io::Result<File> {
     opts.open(path)
 }
 
+/// Whether `e` says the file system has no advisory locks at all, as opposed
+/// to refusing this one. Android's FUSE storage (`/storage/emulated/0`)
+/// answers `flock` with ENOSYS. There the descriptor is the only exclusion,
+/// as for Obsidian on mobile: a present one refuses, and ours is published.
+fn locks_unsupported(e: &io::Error) -> bool {
+    if e.kind() == io::ErrorKind::Unsupported {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        matches!(e.raw_os_error(), Some(libc::ENOSYS | libc::EOPNOTSUPP))
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 impl HostLock {
     /// Try to take the folder lock without waiting, then publish `descriptor`
     /// (if given). `private` is the private dir name, usually `.mdbase`.
+    ///
+    /// On a file system without advisory locks ([`locks_unsupported`]) there
+    /// is no OS lock to take: a present descriptor refuses with
+    /// [`LockError::Held`], and otherwise the folder is taken on the
+    /// descriptor alone. Two openers racing between the check and the publish
+    /// can both get in; the OS lock is what closes that window elsewhere.
     pub fn try_acquire(
         root: &Path,
         private: &str,
@@ -282,6 +306,11 @@ impl HostLock {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(LockError::Held(read_descriptor_in(&dir)));
+            }
+            Err(std::fs::TryLockError::Error(e)) if locks_unsupported(&e) => {
+                if let Some(d) = read_descriptor_in(&dir) {
+                    return Err(LockError::Held(Some(d)));
+                }
             }
             Err(std::fs::TryLockError::Error(e)) => return Err(LockError::Io(e)),
         }
@@ -321,6 +350,9 @@ impl HostLock {
                 Ok(false)
             }
             Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+            Err(std::fs::TryLockError::Error(e)) if locks_unsupported(&e) => {
+                Ok(read_descriptor_in(&dir).is_some())
+            }
             Err(std::fs::TryLockError::Error(e)) => Err(LockError::Io(e)),
         }
     }
@@ -492,6 +524,30 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn only_a_missing_lock_primitive_counts_as_no_locks() {
+        assert!(locks_unsupported(&io::Error::from(
+            io::ErrorKind::Unsupported
+        )));
+        #[cfg(unix)]
+        {
+            // Android's FUSE storage (`/storage/emulated/0`) answers `flock` with ENOSYS.
+            assert!(locks_unsupported(&io::Error::from_raw_os_error(
+                libc::ENOSYS
+            )));
+            assert!(locks_unsupported(&io::Error::from_raw_os_error(
+                libc::EOPNOTSUPP
+            )));
+            assert!(!locks_unsupported(&io::Error::from_raw_os_error(
+                libc::EACCES
+            )));
+            assert!(!locks_unsupported(&io::Error::from_raw_os_error(libc::EIO)));
+        }
+        assert!(!locks_unsupported(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
     }
 
     #[test]

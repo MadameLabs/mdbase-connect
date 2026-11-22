@@ -740,12 +740,37 @@ fn not_ready(status: &CollectionStatus) -> ControlError {
     )
 }
 
+/// Where an in-process host keeps `root`'s index and identity.
+/// `MDBASE_FOLDER_STATE_DIR` moves them out of `<root>/.mdbase/library`, one
+/// subdir per folder, for collections on storage that cannot hold a 0600
+/// file: Android's shared storage is FUSE, ignores `chmod`, and the identity
+/// holds key seeds. Unset, the default stays.
+fn folder_state_dir(root: &Path) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_owned());
+    folder_state_dir_in(std::env::var_os("MDBASE_FOLDER_STATE_DIR"), &root)
+}
+
+fn folder_state_dir_in(base: Option<std::ffi::OsString>, root: &Path) -> Option<PathBuf> {
+    let name: String = root
+        .to_string_lossy()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    Some(PathBuf::from(base?).join(name))
+}
+
 /// Open `root` in process and start a host session on it.
 fn in_process(root: &Path) -> Result<Transport, ClientError> {
     let mut folder = mdbn_local_host::open_folder(
         root,
         &FolderOptions {
-            state_dir: None,
+            state_dir: folder_state_dir(root),
             desktop: true,
             timezone: None,
             take_over: false,
@@ -1525,5 +1550,32 @@ pub(crate) fn to_wire(v: &Value) -> WireValue {
         Value::Object(o) => {
             WireValue::Map(o.iter().map(|(k, v)| (k.clone(), to_wire(v))).collect())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_state_dir_is_the_default_without_the_variable() {
+        assert_eq!(folder_state_dir_in(None, Path::new("/srv/vault")), None);
+    }
+
+    #[test]
+    fn folder_state_dir_gives_each_folder_its_own_subdir() {
+        let base = std::ffi::OsString::from("/home/u/.local/state/mdbase-folders");
+        let a = folder_state_dir_in(
+            Some(base.clone()),
+            Path::new("/storage/emulated/0/BIBLIOTECA"),
+        )
+        .unwrap();
+        let b = folder_state_dir_in(Some(base), Path::new("/storage/emulated/0/OUTRA")).unwrap();
+        assert!(a.starts_with("/home/u/.local/state/mdbase-folders"));
+        assert_eq!(a.parent(), b.parent());
+        assert_ne!(a, b);
+        // One plain name under the base, never a path that leaves it.
+        assert_eq!(a.components().count(), b.components().count());
+        assert!(!a.file_name().unwrap().to_string_lossy().contains('/'));
     }
 }
