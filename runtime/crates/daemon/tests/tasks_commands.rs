@@ -687,7 +687,7 @@ fn projeto_milestone_grava_e_projects_mostra() {
 
 #[test]
 fn projeto_priority_grava_e_projects_mostra() {
-    let f = fixture("tpr", Some("{}"));
+    let f = fixture("tprio", Some("{}"));
     two_projects(&f);
 
     let (code, v) = f.json(&["tasks", "projects", "priority", "q", "--prioridade", "alta"]);
