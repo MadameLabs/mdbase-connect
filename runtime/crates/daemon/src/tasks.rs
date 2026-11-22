@@ -18,8 +18,8 @@ use clap::{Args, Subcommand};
 use mdbn_tasks::{
     Binding, NewTask, OpenEntry, ProjectItem, ProjectsSummary, ReviewItem, TaskError, TaskView,
     TasksConfig, filter_queue_by_owner, is_project_path, list_projects, parse_instant,
-    person_matches, project_assign, project_milestone, project_name, project_rename_status,
-    project_review, project_status, projects_summary, resolve_person,
+    person_matches, project_assign, project_milestone, project_name, project_priority,
+    project_rename_status, project_review, project_status, projects_summary, resolve_person,
 };
 use mdbn_wire::Wire;
 use mdbn_wire::cbor::Cbor;
@@ -304,6 +304,21 @@ pub(crate) enum ProjectsCmd {
         data: Option<String>,
         /// Clear the milestone.
         #[arg(long, conflicts_with = "marco")]
+        limpar: bool,
+        #[command(flatten)]
+        write: TaskWrite,
+    },
+    /// Set or clear the priority, with a value of the project type.
+    Priority {
+        #[command(flatten)]
+        target: Target,
+        /// Project name or path.
+        projeto: String,
+        /// The priority, one of the `priority` values of the project type.
+        #[arg(long, value_name = "V", required_unless_present = "limpar")]
+        prioridade: Option<String>,
+        /// Clear the priority.
+        #[arg(long, conflicts_with = "prioridade")]
         limpar: bool,
         #[command(flatten)]
         write: TaskWrite,
@@ -857,6 +872,24 @@ async fn execute_projects(cmd: ProjectsCmd, profile: &Profile) -> Result<Value, 
             s.write_project(&project, op, write.if_revision.as_deref())
                 .await
         }
+        ProjectsCmd::Priority {
+            target,
+            projeto,
+            prioridade,
+            limpar,
+            write,
+        } => {
+            let mut s = Session::open(&target, profile, false).await?;
+            let project = s.find_project(&projeto).await?;
+            let op = project_priority(
+                &project,
+                prioridade.as_deref(),
+                &s.project_priorities,
+                limpar,
+            )?;
+            s.write_project(&project, op, write.if_revision.as_deref())
+                .await
+        }
         ProjectsCmd::RenameStatus {
             target,
             de,
@@ -919,6 +952,8 @@ struct Session {
     config: Option<TasksConfig>,
     /// Present only for the commands that write a time or a date.
     clock: Option<Clock>,
+    /// The `priority` values the project type allows; empty when it declares none.
+    project_priorities: Vec<String>,
 }
 
 impl Session {
@@ -935,11 +970,13 @@ impl Session {
         let types = describe(&mut t).await?;
         let binding = Binding::from_type(&task_definition(&types)?)?;
         let config = read_config(&root)?;
+        let project_priorities = project_priorities(&types);
         Ok(Session {
             t,
             binding,
             config,
             clock,
+            project_priorities,
         })
     }
 
@@ -1250,6 +1287,25 @@ fn task_definition(types: &[data::TypeSummary]) -> Result<Value, Failure> {
                 "the collection has no task type; declare it in its types folder",
             )
         })
+}
+
+/// The `priority` values of the project type, from its schema; empty when the type
+/// is missing or declares none.
+fn project_priorities(types: &[data::TypeSummary]) -> Vec<String> {
+    types
+        .iter()
+        .find(|ty| ty.name == PROJECT_TYPE)
+        .and_then(|ty| ty.definition.as_ref())
+        .and_then(|def| def.pointer("/schema/value/properties/priority/enum"))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The collection's types, with their definitions.

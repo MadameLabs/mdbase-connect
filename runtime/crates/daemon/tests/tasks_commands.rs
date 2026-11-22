@@ -686,6 +686,45 @@ fn projeto_milestone_grava_e_projects_mostra() {
 }
 
 #[test]
+fn projeto_priority_grava_e_projects_mostra() {
+    let f = fixture("tpr", Some("{}"));
+    two_projects(&f);
+
+    let (code, v) = f.json(&["tasks", "projects", "priority", "q", "--prioridade", "alta"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["priority"], "alta", "{v}");
+
+    let (_, listed) = f.json(&["tasks", "projects", "list"]);
+    let q_item = listed["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "q")
+        .expect("q listed")
+        .clone();
+    assert_eq!(q_item["priority"], "alta", "{listed}");
+
+    let (code, v) = f.json(&[
+        "tasks",
+        "projects",
+        "priority",
+        "q",
+        "--prioridade",
+        "urgente",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["error"], "prioridade_invalida", "{v}");
+
+    let (code, v) = f.json(&["tasks", "projects", "priority", "q", "--limpar"]);
+    assert_eq!(code, 0, "{v}");
+    let (_, shown) = f.json(&["tasks", "show", Q]);
+    assert!(
+        shown["result"]["frontmatter"]["priority"].is_null(),
+        "{shown}"
+    );
+}
+
+#[test]
 fn projeto_rename_status_ensaia_antes_de_trocar() {
     let f = fixture("trs", Some("{}"));
     two_projects(&f);
