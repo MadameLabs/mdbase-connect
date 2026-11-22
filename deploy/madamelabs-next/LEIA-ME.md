@@ -20,6 +20,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `log-registro.sh` | leva o `next-log` à imagem `.2` com o registro de exclusões em Postgres, com volta automática |
 | `atualizar-backup.sh` | root, pelo Doctor: troca só o `backup.sh` instalado (cópia `.antes.<data>`); recusa o de três bancos antes de o `mdbase_next_hosted` existir |
 | `mcp-instalar.sh` | root, pelo Doctor: sobe o gateway MCP (`next-mcp`, banco `mdbase_next_mcp`) e publica `mcp-next.madamelabs.com.br` pelo túnel, com volta automática |
+| `mcp-registro.sh` | root, pelo Doctor, só leitura: mostra o registro de escritas do gateway (`audit-cli.js`), com os mesmos filtros |
 | `ligar-provedor.sh` | root, pelo Doctor: carrega a imagem do provedor hosted, cria o banco `mdbase_next_hosted`, gera o `.env.provedor` e sobe o `next-hosted-provider` na rede do servidor |
 | `ligar-convites.sh` | root, pelo Doctor: liga ou desliga as rotas de convite de coleção (`ligar` / `desligar`), com cópia do `.env.servidor` e volta automática |
 | `SHA256SUMS` | hashes dos arquivos acima |
