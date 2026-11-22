@@ -9,7 +9,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `compose.yml` | projeto `mdbase-next`: `next-db`, `next-migrate`, `next-server` (`127.0.0.1:8800`), `next-log` (`127.0.0.1:8801`), rede `172.31.249.0/24` |
 | `instalar.sh` | instalação root, uma vez; idempotente |
 | `desfazer.sh` | derruba a stack e tira só as duas regras de túnel |
-| `backup.sh` | `pg_dump` dos dois bancos, contagem exata por tabela, cifrado com gpg, enviado ao R2 |
+| `backup.sh` | `pg_dump` dos três bancos (`mdbase_next`, `mdbase_next_log` e, desde 2026-11-22, `mdbase_next_hosted`), contagem exata por tabela, cifrado com gpg, enviado ao R2 |
 | `mdbase-next-backup.service` e `.timer` | backup diário às 21:30 (horário local) |
 | `backup-timer.sh` | root, pelo Doctor: instala o `.timer` do backup e, opcionalmente, copia o backup mais recente para o teste de restauração |
 | `restaurar-teste.sh` | roda no Arthur-PC, sem root: decifra um backup, restaura num Postgres descartável e confere a contagem por tabela |
@@ -18,6 +18,7 @@ Pacote preparado, não executado. Roda no Labs depois da revisão, pelo Doctor L
 | `isolada.py` | confere pela tabela carregada que uma faixa está isolada (por cobertura) |
 | `log-backend.sh` | troca o backend do `next-log` entre memória e Postgres (só a linha `LOGSVC_BACKEND`) |
 | `log-registro.sh` | leva o `next-log` à imagem `.2` com o registro de exclusões em Postgres, com volta automática |
+| `atualizar-backup.sh` | root, pelo Doctor: troca só o `backup.sh` instalado (cópia `.antes.<data>`); recusa o de três bancos antes de o `mdbase_next_hosted` existir |
 | `ligar-provedor.sh` | root, pelo Doctor: carrega a imagem do provedor hosted, cria o banco `mdbase_next_hosted`, gera o `.env.provedor` e sobe o `next-hosted-provider` na rede do servidor |
 | `ligar-convites.sh` | root, pelo Doctor: liga ou desliga as rotas de convite de coleção (`ligar` / `desligar`), com cópia do `.env.servidor` e volta automática |
 | `SHA256SUMS` | hashes dos arquivos acima |
@@ -147,7 +148,7 @@ doctor-pedir -- bash /home/mrlabs/mdbase-next/backup-timer.sh /home/mrlabs/mdbas
 deploy/madamelabs-next/restaurar-teste.sh <mdbase-next-AAAAmmddTHHMMSSZ.tar.gz.gpg> <backup.key>
 ```
 
-O script decifra, sobe `postgres:17-alpine` (a mesma imagem fixada do `next-db`) com `--network none` e `--rm`, restaura `mdbase_next` e `mdbase_next_log`, recalcula a contagem com a consulta do `backup.sh` e compara com o `contagem.tsv` do backup. Imprime a contagem por tabela e sai com 0 só se bater. O teste do próprio script: `deploy/madamelabs-next/restaurar-teste.test.sh`.
+O script decifra, sobe `postgres:17-alpine` (a mesma imagem fixada do `next-db`) com `--network none` e `--rm`, restaura `mdbase_next`, `mdbase_next_log` e, quando o backup o tem, `mdbase_next_hosted` (backups anteriores a 2026-11-22 restauram com aviso), recalcula a contagem com a consulta do `backup.sh` e compara com o `contagem.tsv` do backup. Imprime a contagem por tabela e sai com 0 só se bater. O teste do próprio script: `deploy/madamelabs-next/restaurar-teste.test.sh`.
 
 ## Provedor hosted (pré-requisito dos convites)
 
@@ -166,6 +167,14 @@ doctor-pedir -- bash /home/mrlabs/mdbase-next/ligar-provedor.sh /home/mrlabs/mdb
 Confere o sha256 da imagem e do `compose.yml` e confere que o `compose.yml` em uso é o anterior. Carrega a imagem, cria o papel e o banco, gera o `/opt/mdbase-next/.env.provedor` (0600) se faltar, instala o `compose.yml` (cópia `compose.yml.antes-provedor.<data>`) e sobe só o provedor. Esperado: `ok: provedor pronto em 127.0.0.1:8790 na rede do next-server`. Se o `/ready` não vier, ele tira o provedor e volta o `compose.yml`, mas o `.env.provedor` e o banco ficam para a próxima tentativa. **Volta manual:** `docker compose -p mdbase-next -f /opt/mdbase-next/compose.yml --project-directory /opt/mdbase-next rm -sf next-hosted-provider` e o `compose.yml.antes-provedor.<data>`.
 
 Depois da ficha G, o Arthur guarda no Bitwarden (`mdbase-next · provedor hosted`) a chave mestra e o token interno do `.env.provedor` e as credenciais do R2.
+
+**Ficha H, root, pelo Doctor, só depois da ficha G** (o `backup.sh` novo faz dump do `mdbase_next_hosted`):
+
+```sh
+doctor-pedir -- bash /home/mrlabs/mdbase-next/atualizar-backup.sh /home/mrlabs/mdbase-next/backup.sh
+```
+
+Esperado: `ok: backup.sh instalado`. No dia seguinte, conferir o backup das 21:30 com o `restaurar-teste.sh` no Arthur-PC: a saída lista as tabelas do `mdbase_next_hosted`. Volta: o mesmo comando com o `/opt/mdbase-next/backup.sh.antes.<data>`.
 
 ## Convites entre contas (prova da migração, Task 4)
 
