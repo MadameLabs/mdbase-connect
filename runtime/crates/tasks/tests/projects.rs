@@ -6,8 +6,8 @@
 
 use mdbn_tasks::{
     Binding, ProjectItem, ProjectsSummary, ReviewItem, TaskError, TaskView, filter_queue_by_owner,
-    list_projects, project_assign, project_milestone, project_name, project_rename_status,
-    project_review, project_status, projects_summary,
+    list_projects, project_assign, project_milestone, project_name, project_priority,
+    project_rename_status, project_review, project_status, projects_summary,
 };
 use serde_json::{Map, Value, json};
 
@@ -359,6 +359,52 @@ fn proximo_marco_texto_obrigatorio_data_opcional_e_valida_limpar_apaga() {
     assert_eq!(campos(&limpo).get("nextMilestoneDate"), Some(&Value::Null));
 }
 
+fn permitidos() -> Vec<String> {
+    ["nenhuma", "baixa", "normal", "alta"]
+        .map(String::from)
+        .to_vec()
+}
+
+#[test]
+fn prioridade_grava_valor_do_tipo() {
+    let p = projeto("q", json!({}));
+    let op = project_priority(&p, Some(" alta "), &permitidos(), false).expect("sets");
+    assert_eq!(campos(&op).get("priority"), Some(&json!("alta")));
+}
+
+#[test]
+fn prioridade_recusa_fora_do_tipo() {
+    let p = projeto("q", json!({}));
+    assert_eq!(
+        code(project_priority(&p, Some("Alta"), &permitidos(), false)),
+        "prioridade_invalida"
+    );
+    assert_eq!(
+        code(project_priority(&p, Some("urgente"), &permitidos(), false)),
+        "prioridade_invalida"
+    );
+    assert_eq!(
+        code(project_priority(&p, None, &permitidos(), false)),
+        "prioridade_invalida"
+    );
+}
+
+#[test]
+fn prioridade_sem_enum_no_tipo() {
+    let p = projeto("q", json!({}));
+    assert_eq!(
+        code(project_priority(&p, Some("alta"), &[], false)),
+        "prioridade_indisponivel"
+    );
+}
+
+#[test]
+fn prioridade_limpar() {
+    let p = projeto("q", json!({"priority": "alta"}));
+    let op = project_priority(&p, None, &permitidos(), true).expect("clears");
+    assert_eq!(campos(&op).get("priority"), Some(&Value::Null));
+}
+
 #[test]
 fn renomear_status_troca_so_o_valor_e_recusa_destino_invalido() {
     let velho = projeto("velho", json!({"status": "ativo"}));
@@ -488,11 +534,12 @@ fn o_resumo_traz_o_proximo_marco() {
     let s = summary(
         &[projeto(
             "p",
-            json!({"nextMilestone": "lançar", "nextMilestoneDate": "2026-12-01"}),
+            json!({"nextMilestone": "lançar", "nextMilestoneDate": "2026-12-01", "priority": "alta"}),
         )],
         &[],
     );
     assert_eq!(item(&s, "p").next_milestone.as_deref(), Some("lançar"));
+    assert_eq!(item(&s, "p").priority.as_deref(), Some("alta"));
     assert_eq!(
         item(&s, "p").next_milestone_date.as_deref(),
         Some("2026-12-01")
