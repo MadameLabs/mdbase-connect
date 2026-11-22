@@ -1,0 +1,24 @@
+# Daemon da stack next no Labs (usuário mrlabs, sem root), ao lado do mdbase-connect.service.
+# Escrita à mão: o `mdbase service install` roda o perfil instalado, cria mdbase.service e
+# trata o mdbase-connect.service legado, que não pode mudar antes do dia da troca.
+# Perfil isolado (--state-dir); MDBASE_CONNECT_HOME aponta para uma pasta vazia, para o
+# daemon nunca olhar o estado do espelho atual (~/.local/share/connect).
+# Instalar: ~/.config/systemd/user/, `systemctl --user daemon-reload`, `enable --now`.
+[Unit]
+Description=mdbase next (perfil isolado, ao lado do mdbase-connect)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=MDBASE_CONNECT_HOME=/home/mrlabs/.local/state/mdbase-next/no-connect
+ExecStart=/home/mrlabs/mdbase-next/bin/mdbase-next --state-dir /home/mrlabs/.local/state/mdbase-next/s daemon run
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=384M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
