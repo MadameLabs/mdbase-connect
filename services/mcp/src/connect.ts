@@ -520,10 +520,16 @@ export class ConnectGateway {
         refresh_token: credentials.refreshToken,
         client_id: connection.upstream_client_id
       }).toString();
-      const proof = credentials.authority
+      // Connect checks the refresh against the grant's proof key: the remote
+      // authority key, or for a native (mdbase-next) grant the grant signing key
+      // the consent bound. An unsigned native refresh is refused with invalid_grant,
+      // so every native connection died one access-token lifetime after consent.
+      const proofPublicKey = credentials.authority?.proofPublicKey
+        ?? credentials.nativeCompletion?.grant_signing_public_key;
+      const proof = proofPublicKey
         ? await this.authorityProof(
             connection,
-            credentials.authority.proofPublicKey,
+            proofPublicKey,
             "POST",
             refreshUrl,
             refreshBody,
