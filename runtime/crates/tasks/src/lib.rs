@@ -27,7 +27,7 @@ pub use plan::{
 pub use projects::{
     Orphan, ProjectItem, ProjectsSummary, ReviewItem, filter_queue_by_owner, is_project_path,
     is_valid_date, list_projects, path_matches, project_assign, project_milestone, project_name,
-    project_rename_status, project_review, project_status, projects_summary,
+    project_priority, project_rename_status, project_review, project_status, projects_summary,
 };
 pub use timer::{
     OpenEntry, PERSON_PREFIX, StopPlan, open_entries, parse_instant, person_matches, retime, start,

@@ -32,7 +32,7 @@ const APROVACAO: &str = "aprovacao";
 const EM_ANDAMENTO: &str = "em-andamento";
 
 /// The review reasons, in the order the queue lists them.
-const REASONS: [&str; 7] = [
+const REASONS: [&str; 8] = [
     "desfecho_ausente",
     "retomada_vencida",
     "pausa_sem_retomada",
@@ -40,6 +40,7 @@ const REASONS: [&str; 7] = [
     "status_desconhecido",
     "parado",
     "aguardando_aprovacao",
+    "sem_prioridade",
 ];
 
 /// Plans a status change of a project. Returns the `update` op.
@@ -163,6 +164,37 @@ pub fn project_milestone(
     Ok(update(p, fields))
 }
 
+/// Plans the priority of a project: one of the values the project type allows in
+/// its `priority` enum, trimmed and matched exactly. `limpar` clears it. The priority
+/// needs no owner.
+pub fn project_priority(
+    p: &TaskView,
+    valor: Option<&str>,
+    permitidos: &[String],
+    limpar: bool,
+) -> Result<Value, TaskError> {
+    let mut fields = Map::new();
+    if limpar {
+        fields.insert("priority".into(), Value::Null);
+        return Ok(update(p, fields));
+    }
+    if permitidos.is_empty() {
+        return Err(TaskError::new(
+            "prioridade_indisponivel",
+            "the project type declares no priority values",
+        ));
+    }
+    let value = valor.map_or("", str::trim);
+    if !permitidos.iter().any(|v| v == value) {
+        return Err(TaskError::new(
+            "prioridade_invalida",
+            format!("{value:?} is not one of: {}", permitidos.join(", ")),
+        ));
+    }
+    fields.insert("priority".into(), json!(value));
+    Ok(update(p, fields))
+}
+
 /// Plans the rename of a status value: one op per project whose `status` is exactly
 /// `de`, setting it to `para`. No transition rules apply, so a legacy project keeps
 /// its owner and outcome as they are. `para` must be a status of the task type. The
@@ -212,6 +244,8 @@ pub struct ProjectItem {
     pub next_milestone: Option<String>,
     /// The day of the next milestone, when it has one.
     pub next_milestone_date: Option<String>,
+    /// The priority, as stored.
+    pub priority: Option<String>,
     /// Linked tasks that are not closed.
     pub open_tasks: usize,
     /// Linked tasks, closed or not.
@@ -236,6 +270,7 @@ impl ProjectItem {
             "resumeOn": self.resume_on,
             "nextMilestone": self.next_milestone,
             "nextMilestoneDate": self.next_milestone_date,
+            "priority": self.priority,
             "openTasks": self.open_tasks,
             "totalTasks": self.total_tasks,
             "lastActivity": self.last_activity,
@@ -309,6 +344,7 @@ pub fn projects_summary(b: &Binding, projects: &[TaskView], tasks: &[TaskView]) 
                 resume_on: day(string_of(fm.get("resumeOn")).as_deref()),
                 next_milestone: string_of(fm.get("nextMilestone")),
                 next_milestone_date: day(string_of(fm.get("nextMilestoneDate")).as_deref()),
+                priority: string_of(fm.get("priority")),
                 open_tasks: open.len(),
                 total_tasks: linked.len(),
                 last_activity: linked.iter().filter_map(|t| last_activity(b, t)).max(),
@@ -463,6 +499,14 @@ fn reason_for(item: &ProjectItem, today: &str, limite: &str) -> Option<&'static 
     }
     if status == Some(APROVACAO) {
         return Some("aguardando_aprovacao");
+    }
+    // `nenhuma` means "not triaged yet", the same as a missing field.
+    if item
+        .priority
+        .as_deref()
+        .is_none_or(|p| p.is_empty() || p == "nenhuma")
+    {
+        return Some("sem_prioridade");
     }
     None
 }

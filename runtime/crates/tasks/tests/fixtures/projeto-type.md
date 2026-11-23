@@ -51,6 +51,8 @@ schema:
       nextMilestoneDate:
         type: string
         format: date
+      priority:
+        enum: [nenhuma, baixa, normal, alta]
 ---
 
 # Projeto
