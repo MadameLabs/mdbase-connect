@@ -83,6 +83,17 @@ const PRIVATE_DIR: &str = mdbn_local_host::store::DEFAULT_PRIVATE_DIR;
 pub const OBSERVE_EVERY: Duration = Duration::from_millis(1500);
 /// The safety-net rescan interval when the native watcher runs.
 pub const OBSERVE_EVERY_WATCHED: Duration = Duration::from_secs(60);
+
+/// [`OBSERVE_EVERY_WATCHED`], or `MDBASE_OBSERVE_SAFETY_SECS` (10 s to 1 h) when set.
+/// On a phone the full rescan of a large folder every minute keeps the CPU awake;
+/// the watcher still catches changes within seconds.
+pub fn observe_every_watched() -> Duration {
+    std::env::var("MDBASE_OBSERVE_SAFETY_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|s| Duration::from_secs(s.clamp(10, 3600)))
+        .unwrap_or(OBSERVE_EVERY_WATCHED)
+}
 /// How often the daemon re-publishes its folder host descriptor. A host
 /// that cannot take the OS lock (Obsidian) yields when it finds a descriptor
 /// that is not its own; the daemon, holding the lock, always re-asserts.

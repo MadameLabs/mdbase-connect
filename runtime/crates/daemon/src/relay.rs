@@ -518,8 +518,18 @@ async fn session<H: RelayHost>(
     tracing::info!(session = %session_id, "relay connected");
     let (out_tx, mut out_rx) = mpsc::channel::<PipeOut>(256);
     let mut open: BTreeMap<[u8; 16], Pipe> = BTreeMap::new();
-    let mut sweep = tokio::time::interval(Duration::from_secs(1));
+    // Sweep every second while pipes are open; idle, every `MDBASE_RELAY_IDLE_SWEEP_SECS`
+    // (default 1, so desktops are unchanged): a phone saves the per-second wakeup.
+    let idle_sweep = std::env::var("MDBASE_RELAY_IDLE_SWEEP_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|s| Duration::from_secs(s.clamp(1, 60)))
+        .unwrap_or(Duration::from_secs(1));
+    let mut sweep_at = tokio::time::Instant::now() + Duration::from_secs(1);
     let ended = loop {
+        if !open.is_empty() {
+            sweep_at = sweep_at.min(tokio::time::Instant::now() + Duration::from_secs(1));
+        }
         tokio::select! {
             msg = rx.next() => {
                 let msg = match msg {
@@ -597,7 +607,9 @@ async fn session<H: RelayHost>(
                     break Ended::Retry("send".into());
                 }
             }
-            _ = sweep.tick() => {
+            _ = tokio::time::sleep_until(sweep_at) => {
+                sweep_at = tokio::time::Instant::now()
+                    + if open.is_empty() { idle_sweep } else { Duration::from_secs(1) };
                 if host.old_connector_running() != old_connector_running {
                     break Ended::Retry("old connector state changed".into());
                 }

@@ -31,7 +31,7 @@ pub(super) fn run(
     let mut last_heartbeat = std::time::Instant::now();
     let mut observe_due: Option<std::time::Instant> = None;
     let observe_every = if watcher.is_some() {
-        OBSERVE_EVERY_WATCHED
+        observe_every_watched()
     } else {
         OBSERVE_EVERY
     };
