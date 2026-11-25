@@ -41,14 +41,32 @@ export function createMcpServer(
     title: "List mdbase collections",
     description: "List the mdbase collections the user has approved for this connector and the operations each one allows. Call it first: every other tool needs a connection_id it returns. If the collection the user means is not listed, use add_connection.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, async () => toolResult({ connections: await gateway.listConnections(context.connectionSetId) }));
+  }, async () => {
+    const observe = track("list_connections", null, {});
+    try {
+      const connections = await gateway.listConnections(context.connectionSetId);
+      observe({ ok: true, value: connections });
+      return toolResult({ connections });
+    } catch (error) {
+      observe({ ok: false, code: error instanceof GatewayOperationError ? error.code : "operation_failed" });
+      throw error;
+    }
+  });
 
   registerTool("add_connection", {
     title: "Connect another mdbase collection",
     description: "Create a single-use browser link, valid for ten minutes, where the user can approve another mdbase collection and its permissions. Use it when the user asks to connect, add or approve another collection (for example \"connect my reading list too\"), or when the collection they mean is not in list_connections. Give the user the link: nothing is approved until they open it and approve in the browser, so call list_connections afterwards and never claim approval happened before it shows the collection.",
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   }, async () => {
-    const authorizationUrl = await oauth.createConnectionTicket(context);
+    const observe = track("add_connection", null, {});
+    let authorizationUrl: string;
+    try {
+      authorizationUrl = await oauth.createConnectionTicket(context);
+    } catch (error) {
+      observe({ ok: false, code: error instanceof GatewayOperationError ? error.code : "operation_failed" });
+      throw error;
+    }
+    observe({ ok: true, value: null });
     return toolResult({
       authorization_url: authorizationUrl,
       expires_in: 600,
@@ -62,7 +80,15 @@ export function createMcpServer(
     inputSchema: { connection_id: connectionId },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   }, async ({ connection_id }) => {
-    const authorizationUrl = await oauth.createConnectionTicket(context, connection_id);
+    const observe = track("reconnect_collection", connection_id, {});
+    let authorizationUrl: string;
+    try {
+      authorizationUrl = await oauth.createConnectionTicket(context, connection_id);
+    } catch (error) {
+      observe({ ok: false, code: error instanceof GatewayOperationError ? error.code : "operation_failed" });
+      throw error;
+    }
+    observe({ ok: true, value: null });
     return toolResult({
       authorization_url: authorizationUrl,
       connection_id,
@@ -369,8 +395,9 @@ async function operationTool(
     if (operation === "changes") {
       const page = value as CollectionChangesPage;
       if (!Array.isArray(page?.events)) throw new GatewayOperationError("invalid_operation_response", "Invalid changes page.");
+      const typedEvents = page.events.map(normalizeCollectionChange);
       options.observe?.({ ok: true, value });
-      return toolResult({ ...page, typed_events: page.events.map(normalizeCollectionChange) });
+      return toolResult({ ...page, typed_events: typedEvents });
     }
     options.onSettled?.({ ok: true, revision: revisionOf(value) });
     options.observe?.({ ok: true, value });
@@ -436,7 +463,7 @@ function revisionOf(value: unknown): string | null {
 }
 
 type CallObserver = (settled: { ok: true; value: unknown } | { ok: false; code: string }) => void;
-type CallTracker = (tool: string, connectionId: string, input: unknown) => CallObserver;
+type CallTracker = (tool: string, connectionId: string | null, input: unknown) => CallObserver;
 
 /** Starts the clock for one tool call; the returned observer logs it once settled.
  * Logging runs after the response is produced, is never awaited by it, and only
@@ -448,7 +475,8 @@ function callTracker(
   queryTextCollections: ReadonlySet<string>
 ): CallTracker {
   let collections: Promise<Map<string, string>> | undefined;
-  const collectionOf = async (connectionId: string): Promise<string | null> => {
+  const collectionOf = async (connectionId: string | null): Promise<string | null> => {
+    if (connectionId === null) return null;
     try {
       collections ??= Promise.resolve(gateway.listConnections(context.connectionSetId))
         .then((list) => new Map(list.map((connection) => [connection.id, connection.collection_id])));
@@ -502,6 +530,8 @@ function inputPaths(input: unknown): string[] {
 }
 
 function successFields(tool: string, input: unknown, value: unknown): { resultCount: number | null; paths: string[] } {
+  if (tool === "list_connections") return { resultCount: Array.isArray(value) ? value.length : null, paths: [] };
+  if (tool === "add_connection" || tool === "reconnect_collection") return { resultCount: null, paths: [] };
   if (tool === "read_record") return { resultCount: 1, paths: inputPaths(input) };
   if (tool === "query_records") {
     const results = isObject(value) && Array.isArray(value.results) ? value.results : null;

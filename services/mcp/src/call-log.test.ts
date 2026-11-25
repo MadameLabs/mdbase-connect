@@ -107,9 +107,9 @@ function fakeLog(record?: CallLog["record"]) {
   return { log: log as CallLog & typeof log, entries };
 }
 
-async function connectServer(gateway: unknown, callLog: CallLog, queryTextCollections?: ReadonlySet<string>) {
+async function connectServer(gateway: unknown, callLog: CallLog, queryTextCollections?: ReadonlySet<string>, oauth: unknown = {}) {
   const server = createMcpServer(
-    ctx, gateway as ConnectGateway, {} as unknown as OAuthService,
+    ctx, gateway as ConnectGateway, oauth as OAuthService,
     { begin: async () => "1", finish: async () => undefined },
     { callLog, queryTextCollections }
   );
@@ -214,6 +214,59 @@ describe("registro das chamadas no servidor MCP", () => {
     await settled(entries);
     expect(entries[0]).toMatchObject({ tool: "update_record", outcome: "ok", paths: ["n.md"] });
     expect(JSON.stringify(entries[0])).not.toContain("corpo secreto");
+  });
+
+  it("list_connections grava a contagem de conexões, sem conexão nem coleção", async () => {
+    const gateway = { listConnections: vi.fn(connections) };
+    const { log, entries } = fakeLog();
+    const client = await connectServer(gateway, log);
+    await client.callTool({ name: "list_connections", arguments: {} });
+    await settled(entries);
+    expect(entries[0]).toMatchObject({
+      tool: "list_connections", connectionId: null, collectionId: null, outcome: "ok", errorCode: null, resultCount: 1, paths: []
+    });
+    await client.close();
+  });
+
+  it("add_connection grava a chamada sem a URL de autorização", async () => {
+    const url = "https://mcp.example/authorize?ticket=segredo-do-ticket";
+    const oauth = { createConnectionTicket: vi.fn(async () => url) };
+    const { log, entries } = fakeLog();
+    const client = await connectServer({ listConnections: vi.fn(connections) }, log, undefined, oauth);
+    const result = await client.callTool({ name: "add_connection", arguments: {} });
+    await settled(entries);
+    expect(result.isError).toBeFalsy();
+    expect(entries[0]).toMatchObject({
+      tool: "add_connection", connectionId: null, collectionId: null, outcome: "ok", resultCount: null, paths: []
+    });
+    expect(JSON.stringify(entries[0])).not.toContain("segredo-do-ticket");
+    await client.close();
+  });
+
+  it("reconnect_collection grava a conexão e a coleção, sem a URL", async () => {
+    const url = "https://mcp.example/authorize?ticket=segredo-do-ticket";
+    const oauth = { createConnectionTicket: vi.fn(async () => url) };
+    const { log, entries } = fakeLog();
+    const client = await connectServer({ listConnections: vi.fn(connections) }, log, undefined, oauth);
+    await client.callTool({ name: "reconnect_collection", arguments: { connection_id: CONN } });
+    await settled(entries);
+    expect(entries[0]).toMatchObject({
+      tool: "reconnect_collection", connectionId: CONN, collectionId: "col-1", outcome: "ok", resultCount: null, paths: []
+    });
+    expect(JSON.stringify(entries[0])).not.toContain("segredo-do-ticket");
+    await client.close();
+  });
+
+  it("list_changes grava erro quando a normalização dos eventos falha", async () => {
+    const gateway = { operation: vi.fn(async () => ({ events: [null], cursor: 1 })), listConnections: vi.fn(connections) };
+    const { log, entries } = fakeLog();
+    const client = await connectServer(gateway, log);
+    const result = await client.callTool({ name: "list_changes", arguments: { connection_id: CONN, after: 0 } });
+    await settled(entries);
+    expect(result.isError).toBe(true);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ tool: "list_changes", outcome: "error" });
+    await client.close();
   });
 });
 

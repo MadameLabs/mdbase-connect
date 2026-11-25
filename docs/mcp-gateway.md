@@ -160,11 +160,25 @@ testing those hosts.
 | `MDBASE_MCP_MASTER_KEY` | Stable random secret, at least 32 characters |
 | `MDBASE_MCP_TRUST_PROXY` | `1` only behind the trusted production proxy |
 | `HOST`, `PORT` | Listener address; defaults are `127.0.0.1:8790` |
+| `MDBASE_MCP_CALL_LOG_RETENTION_DAYS` | Days the call log is kept; default `30`, range 1–365 |
+| `MDBASE_MCP_CALL_LOG_QUERY_TEXT_COLLECTIONS` | Comma-separated collection IDs whose `query_records` `where` text is recorded; default empty (never recorded) |
 
 The master key is not recoverable from the database. Back it up in the hosting
 provider's secret store. Rotating it without a credential re-encryption
 migration requires users to reconnect. Startup verifies a durable encrypted
 marker and fails closed when the configured key does not match the database.
+
+### Call log
+
+Every tool call is recorded in `mcp_call_log`, including `list_connections`,
+`add_connection` and `reconnect_collection`. Only metadata is stored: client,
+connection set, connection and collection IDs, tool, duration, outcome, error
+code, result count and the record paths involved. Note content (bodies,
+frontmatter) and authorization URLs are never stored, and the query text only
+for the collections listed in `MDBASE_MCP_CALL_LOG_QUERY_TEXT_COLLECTIONS`.
+Logging never delays a response, and a failed write is only reported to the
+console. Rows older than the retention period are purged daily. Read the log
+with `audit-cli.js --chamadas`.
 
 ## Production finalization
 

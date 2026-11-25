@@ -48,11 +48,11 @@ export function createPgCallLog(db: DatabaseQueryable): CallLog {
       );
     },
     async purgeOlderThan(days) {
-      const { rows } = await db.query<{ id: string }>(
-        `DELETE FROM mcp_call_log WHERE created_at < $1::timestamptz RETURNING id`,
+      const result = await db.query(
+        `DELETE FROM mcp_call_log WHERE created_at < $1::timestamptz`,
         [new Date(Date.now() - days * 86_400_000).toISOString()]
       );
-      return rows.length;
+      return result.rowCount ?? 0;
     }
   };
 }
