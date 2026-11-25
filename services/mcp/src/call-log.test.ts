@@ -167,7 +167,7 @@ describe("registro das chamadas no servidor MCP", () => {
     const noWhere = fakeLog();
     const c3 = await connectServer(gateway, noWhere.log, new Set(["col-1"]));
     await c3.callTool({ name: "query_records", arguments: { connection_id: CONN } });
-    await settled(outList.entries);
+    await settled(noWhere.entries);
     expect(noWhere.entries[0]!.queryText).toBeNull();
   });
 

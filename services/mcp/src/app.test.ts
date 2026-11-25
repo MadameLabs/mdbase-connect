@@ -28,6 +28,64 @@ const secondGrantId = "30000000-0000-4000-8000-000000000002";
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("limpeza diária do registro de chamadas", () => {
+  const DAY_MS = 24 * 60 * 60_000;
+
+  async function dbWithPurgeSpy(fail = false) {
+    const db = await createDatabase("memory");
+    const purges: unknown[][] = [];
+    const wrapped = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "query") {
+          return (text: string, values?: unknown[]) => {
+            if (text.includes("DELETE FROM mcp_call_log")) {
+              purges.push(values ?? []);
+              if (fail) return Promise.reject(new Error("banco fora"));
+            }
+            return target.query(text, values);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    });
+    return { db: wrapped, purges };
+  }
+
+  it("apaga ao subir, com o corte de callLogRetentionDays, e agenda a cada 24 h", async () => {
+    const setSpy = vi.spyOn(globalThis, "setInterval");
+    const { db, purges } = await dbWithPurgeSpy();
+    const { app } = await buildApp({ db, config: { ...testConfig(), callLogRetentionDays: 7 } });
+    await vi.waitFor(() => expect(purges).toHaveLength(1));
+    const cutoff = new Date(purges[0]![0] as string).getTime();
+    expect(Date.now() - cutoff).toBeGreaterThan(7 * 86_400_000 - 5_000);
+    expect(Date.now() - cutoff).toBeLessThan(7 * 86_400_000 + 5_000);
+    expect(setSpy.mock.calls.some(([, delay]) => delay === DAY_MS)).toBe(true);
+    await app.close();
+  });
+
+  it("falha na limpeza não derruba o app, que segue respondendo", async () => {
+    const { db, purges } = await dbWithPurgeSpy(true);
+    const { app } = await buildApp({ db, config: testConfig() });
+    await vi.waitFor(() => expect(purges).toHaveLength(1));
+    const health = await app.inject({ method: "GET", url: "/health" });
+    expect(health.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("fechar o app limpa o intervalo de 24 h", async () => {
+    const setSpy = vi.spyOn(globalThis, "setInterval");
+    const clearSpy = vi.spyOn(globalThis, "clearInterval");
+    const { db } = await dbWithPurgeSpy();
+    const { app } = await buildApp({ db, config: testConfig() });
+    const index = setSpy.mock.calls.findIndex(([, delay]) => delay === DAY_MS);
+    expect(index).toBeGreaterThanOrEqual(0);
+    const handle = setSpy.mock.results[index]!.value;
+    await app.close();
+    expect(clearSpy).toHaveBeenCalledWith(handle);
+  });
+});
+
 describe("mdbase MCP gateway", () => {
   it("publishes OAuth metadata and challenges unauthenticated MCP requests", async () => {
     const db = await createDatabase("memory");
