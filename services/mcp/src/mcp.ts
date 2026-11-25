@@ -7,6 +7,7 @@ import { ConnectGateway, GatewayOperationError } from "./connect.js";
 import { OAuthService, type McpAuthContext } from "./oauth.js";
 import { noCallLog, type CallLog } from "./call-log.js";
 import { readGuide } from "./guide.js";
+import { nearestFolderRule, type FolderRulesCache } from "./folder-rules.js";
 import { refuseUnrecordedWrites, type WriteAudit, type WriteOutcome, type WriteTool } from "./write-audit.js";
 
 const connectionId = z.uuid().describe("Opaque connection ID returned by list_connections");
@@ -30,7 +31,7 @@ export function createMcpServer(
   gateway: ConnectGateway,
   oauth: OAuthService,
   audit: WriteAudit = refuseUnrecordedWrites,
-  options: { callLog?: CallLog; queryTextCollections?: ReadonlySet<string> } = {}
+  options: { callLog?: CallLog; queryTextCollections?: ReadonlySet<string>; folderRules?: FolderRulesCache } = {}
 ): McpServer {
   const track = callTracker(context, gateway, options.callLog ?? noCallLog, options.queryTextCollections ?? new Set());
   const server = new McpServer(
@@ -174,7 +175,14 @@ export function createMcpServer(
     description: "Read one record's frontmatter, body and current revision by its collection-relative path, such as tasks/renew-passport.md; never pass a local file system path. Use it to show a record and to get the revision to pass as if_revision before changing or deleting it. It does not change anything.",
     inputSchema: { connection_id: connectionId, path },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, ({ connection_id, path }, { signal }) => operationTool(gateway, oauth, context, connection_id, "read", { path }, { signal, observe: track("read_record", connection_id, { path }) }));
+  }, async ({ connection_id, path }, { signal }) => {
+    const [result, rulePaths] = await Promise.all([
+      operationTool(gateway, oauth, context, connection_id, "read", { path }, { signal, observe: track("read_record", connection_id, { path }) }),
+      options.folderRules?.rulePaths(context.connectionSetId, connection_id, signal) ?? Promise.resolve([])
+    ]);
+    if ("isError" in result) return result;
+    return toolResult({ ...result.structuredContent, folder_rule: nearestFolderRule(path, rulePaths) });
+  });
 
   registerTool("validate_collection", {
     title: "Validate an mdbase collection",

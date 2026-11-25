@@ -193,7 +193,7 @@ describe("registro das chamadas no servidor MCP", () => {
     const result = await client.callTool({ name: "read_record", arguments: { connection_id: CONN, path: "a.md" } });
     await vi.waitFor(() => expect(spy).toHaveBeenCalled());
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toEqual(value);
+    expect(result.structuredContent).toEqual({ ...value, folder_rule: null });
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
   });
