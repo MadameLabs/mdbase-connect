@@ -35,7 +35,7 @@ export function searchTerms(query: string): { long: string[]; short: string[] } 
 }
 
 /** A CEL string literal; the text is never concatenated raw. */
-function celString(text: string): string {
+export function celString(text: string): string {
   const body = text
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
