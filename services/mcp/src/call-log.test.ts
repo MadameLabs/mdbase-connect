@@ -184,6 +184,27 @@ describe("registro das chamadas no servidor MCP", () => {
     expect(entries[0]).toMatchObject({ outcome: "error", errorCode: "insufficient_collection_access", resultCount: null });
   });
 
+  it("describe_collection grava a duração do handler inteiro, incluindo a leitura do guia, sem o texto dele", async () => {
+    const gateway = {
+      operation: vi.fn(async (_s: string, _c: string, op: string) => {
+        if (op === "describe") return { collection: "c", types: [], cursor: "k" };
+        await new Promise((r) => setTimeout(r, 120));
+        return { path: "AGENTS.md", revision: "r1", frontmatter: {}, body: "texto secreto do guia" };
+      }),
+      listConnections: vi.fn(async () => [{ id: CONN, collection_id: "col-1", display_name: "x", operations: ["describe", "read"], scope: {}, authority: "local" }])
+    };
+    const { log, entries } = fakeLog();
+    const client = await connectServer(gateway, log);
+    const result = await client.callTool({ name: "describe_collection", arguments: { connection_id: CONN } });
+    await settled(entries);
+    expect(result.structuredContent).toMatchObject({ guide: { text: "texto secreto do guia" } });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ tool: "describe_collection", outcome: "ok" });
+    expect(entries[0]!.durationMs).toBeGreaterThanOrEqual(100);
+    expect(JSON.stringify(entries[0])).not.toContain("texto secreto");
+    await client.close();
+  });
+
   it("falha do callLog.record não muda a resposta e vai ao console", async () => {
     const value = { path: "a.md", revision: "r1", frontmatter: {}, body: "x" };
     const gateway = { operation: vi.fn(async () => value), listConnections: vi.fn(connections) };

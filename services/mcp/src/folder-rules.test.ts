@@ -20,6 +20,12 @@ describe("nearestFolderRule", () => {
     expect(nearestFolderRule("x.md", RULES)).toBeNull();
     expect(nearestFolderRule("02-marcas/x.md", RULES)).toBeNull();
   });
+  it("um AGENTS.md de pasta começa um nível acima", () => {
+    expect(nearestFolderRule("13-engenharia/AGENTS.md", RULES)).toBeNull();
+    expect(nearestFolderRule("13-engenharia/01-planejamento/AGENTS.md", [...RULES, "13-engenharia/01-planejamento/AGENTS.md"]))
+      .toBe("13-engenharia/AGENTS.md");
+    expect(nearestFolderRule("AGENTS.md", RULES)).toBeNull();
+  });
   it("prefixo parecido não conta", () => {
     expect(nearestFolderRule("13-engenharia-velho/x.md", RULES)).toBeNull();
   });
@@ -47,18 +53,104 @@ describe("FolderRulesCache", () => {
     expect(await cache.rulePaths("set-1", CONN)).toEqual(RULES);
     expect(await cache.rulePaths("set-1", CONN)).toEqual(RULES);
     expect(queryCalls(gateway)).toHaveLength(1);
-    expect(queryCalls(gateway)[0][3]).toEqual({ where: 'file.name == "AGENTS.md"' });
+    expect(queryCalls(gateway)[0][3]).toEqual({ where: 'file.name == "AGENTS.md"', limit: 1000 });
     t += 300_001;
     await cache.rulePaths("set-1", CONN);
     expect(queryCalls(gateway)).toHaveLength(2);
   });
-  it("falha da query dá [] e não é guardada", async () => {
+  it("falha da query dá [] e só repete depois de 30 s", async () => {
     let fail = true;
     const gateway = gatewayWith(async () => { if (fail) throw new Error("boom"); return okQuery(); });
-    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway);
+    let t = 1000;
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway, 300_000, () => t);
     expect(await cache.rulePaths("set-1", CONN)).toEqual([]);
     fail = false;
+    t += 29_000;
+    expect(await cache.rulePaths("set-1", CONN)).toEqual([]);
+    expect(queryCalls(gateway)).toHaveLength(1);
+    t += 1_001;
     expect(await cache.rulePaths("set-1", CONN)).toEqual(RULES);
+  });
+  it("pede limit 1000 e resultado truncado devolve os caminhos sem guardar como completo", async () => {
+    const gateway = gatewayWith(async () => ({ results: [{ path: "AGENTS.md" }], meta: { has_more: true } }));
+    let t = 1000;
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway, 300_000, () => t);
+    expect(await cache.rulePaths("set-1", CONN)).toEqual(["AGENTS.md"]);
+    expect(queryCalls(gateway)[0][3]).toEqual({ where: 'file.name == "AGENTS.md"', limit: 1000 });
+    expect(await cache.rulePaths("set-1", CONN)).toEqual(["AGENTS.md"]);
+    expect(queryCalls(gateway)).toHaveLength(1);
+    t += 30_001; // truncated pages live only as long as a failure, not the 5 min TTL
+    await cache.rulePaths("set-1", CONN);
+    expect(queryCalls(gateway)).toHaveLength(2);
+  });
+  it("cursor na resposta também conta como truncado", async () => {
+    const gateway = gatewayWith(async () => ({ results: [{ path: "AGENTS.md" }], meta: { cursor: "c1" } }));
+    let t = 1000;
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway, 300_000, () => t);
+    await cache.rulePaths("set-1", CONN);
+    t += 30_001;
+    await cache.rulePaths("set-1", CONN);
+    expect(queryCalls(gateway)).toHaveLength(2);
+  });
+  it("peek: miss frio devolve null e inicia uma única atualização; depois devolve a lista", async () => {
+    const gateway = gatewayWith(okQuery);
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway);
+    expect(cache.peek("set-1", CONN)).toBeNull();
+    expect(cache.peek("set-1", CONN)).toBeNull();
+    await vi.waitFor(() => expect(cache.peek("set-1", CONN)).toEqual(RULES));
+    expect(queryCalls(gateway)).toHaveLength(1);
+  });
+  it("peek: entrada vencida é servida velha enquanto atualiza", async () => {
+    let paths = ["AGENTS.md"];
+    const gateway = gatewayWith(async () => ({ results: paths.map((path) => ({ path })) }));
+    let t = 1000;
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway, 300_000, () => t);
+    await cache.rulePaths("set-1", CONN);
+    paths = RULES;
+    t += 300_001;
+    expect(cache.peek("set-1", CONN)).toEqual(["AGENTS.md"]);
+    await vi.waitFor(() => expect(cache.peek("set-1", CONN)).toEqual(RULES));
+    expect(queryCalls(gateway)).toHaveLength(2);
+  });
+  it("peek: falha não é repetida em 30 s e a lista velha sobrevive à falha", async () => {
+    let fail = false;
+    const gateway = gatewayWith(async () => { if (fail) throw new Error("boom"); return okQuery(); });
+    let t = 1000;
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway, 300_000, () => t);
+    await cache.rulePaths("set-1", CONN);
+    fail = true;
+    t += 300_001;
+    expect(cache.peek("set-1", CONN)).toEqual(RULES);
+    await vi.waitFor(() => expect(queryCalls(gateway)).toHaveLength(2));
+    await new Promise((r) => setTimeout(r, 5));
+    t += 29_000;
+    expect(cache.peek("set-1", CONN)).toEqual(RULES);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(queryCalls(gateway)).toHaveLength(2);
+  });
+  it("peek: falha em miss frio não gera tempestade de queries", async () => {
+    const gateway = gatewayWith(async () => { throw new Error("boom"); });
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway);
+    expect(cache.peek("set-1", CONN)).toBeNull();
+    await vi.waitFor(() => expect(queryCalls(gateway)).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(cache.peek("set-1", CONN)).toBeNull();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(queryCalls(gateway)).toHaveLength(1);
+  });
+  it("misses concorrentes (peek e rulePaths) fazem uma query só", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const gateway = gatewayWith(async () => { await gate; return okQuery(); });
+    const cache = new FolderRulesCache(gateway as unknown as ConnectGateway);
+    cache.peek("set-1", CONN);
+    const a = cache.rulePaths("set-1", CONN);
+    const b = cache.rulePaths("set-1", CONN);
+    cache.peek("set-1", CONN);
+    release();
+    expect(await a).toEqual(RULES);
+    expect(await b).toEqual(RULES);
+    expect(queryCalls(gateway)).toHaveLength(1);
   });
   it("conexão sem query dá [] sem consultar", async () => {
     const gateway = gatewayWith(okQuery, ["read"]);
@@ -80,11 +172,19 @@ async function connect(gateway: ReturnType<typeof gatewayWith>, withCache = true
 const read = (c: Client) => c.callTool({ name: "read_record", arguments: { connection_id: CONN, path: "13-engenharia/x.md" } });
 
 describe("folder_rule no read_record", () => {
-  it("acrescenta a regra mais próxima à resposta", async () => {
-    const result = await read(await connect(gatewayWith(okQuery)));
-    expect(result.structuredContent).toEqual({
-      path: "13-engenharia/x.md", revision: "r1", frontmatter: {}, body: "b", folder_rule: "13-engenharia/AGENTS.md"
+  it("miss frio devolve null sem esperar a query e a leitura seguinte traz a regra", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const gateway = gatewayWith(async () => { await gate; return okQuery(); });
+    const client = await connect(gateway);
+    const first = await read(client); // would hang if read_record waited on the query
+    expect(first.structuredContent).toMatchObject({ revision: "r1", folder_rule: null });
+    await vi.waitFor(() => expect(queryCalls(gateway)).toHaveLength(1));
+    release();
+    await vi.waitFor(async () => {
+      expect((await read(client)).structuredContent).toMatchObject({ folder_rule: "13-engenharia/AGENTS.md" });
     });
+    expect(queryCalls(gateway)).toHaveLength(1);
   });
   it("falha da query dá folder_rule null sem afetar a leitura", async () => {
     const result = await read(await connect(gatewayWith(async () => { throw new Error("boom"); })));
