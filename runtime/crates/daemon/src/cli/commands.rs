@@ -188,7 +188,7 @@ pub(super) async fn run_command(
             if let Some(description) = description {
                 extra.insert("description".into(), Value::String(description));
             }
-            simple(
+            let _ = simple(
                 profile,
                 out,
                 Method::COLLECTION_UPDATE,

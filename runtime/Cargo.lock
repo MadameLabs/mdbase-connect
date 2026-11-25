@@ -2171,6 +2171,7 @@ dependencies = [
  "mdbn-platform-native",
  "mdbn-replica",
  "mdbn-store-file",
+ "mdbn-tasks",
  "mdbn-trust",
  "mdbn-wire",
  "notify",
@@ -2353,6 +2354,13 @@ dependencies = [
  "mdbn-replica",
  "mdbn-wire",
  "postgres",
+]
+
+[[package]]
+name = "mdbn-tasks"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
