@@ -85,6 +85,7 @@ mod apply;
 #[cfg(test)]
 pub(crate) mod apply;
 pub(crate) mod apply_checkpoint;
+pub use apply_checkpoint::Fence;
 mod approval_peer;
 mod approval_requester;
 mod approval_runtime;
@@ -114,6 +115,7 @@ mod latch;
 mod live;
 pub use latch::Latch;
 mod local;
+mod local_web;
 mod mirror_install;
 mod query_cursor;
 mod query_driver;
@@ -175,7 +177,9 @@ pub use disk::PUBLISH_WAIT_MS;
 pub(crate) use hosted::HOSTED_READ_BYTES;
 #[allow(unused_imports)]
 pub(crate) use hosted::{FreshHead, PolicyOrigin};
-pub use hosted::{HostedAck, HostedCache, HostedProfile, SubmitTicket};
+pub use hosted::{
+    HostedAck, HostedCache, HostedProfile, HostedRepairBoundary, HostedRepairStart, SubmitTicket,
+};
 pub use log_session::{AuthenticatedLogSession, LogReplyScope, LogSessionError};
 pub use query_profile::{QueryExecutionProfile, QuerySourceLimits};
 pub use snapshot::{MAX_REQUEST_NODES, SnapshotBlocked, snapshot_refs_fit, state_digest};
@@ -424,6 +428,7 @@ impl Session {
     pub(crate) fn grant(&self) -> Option<Uuid> {
         match &self.auth {
             SessionAuth::Host => None,
+            SessionAuth::LocalWeb(owner) => Some(*owner),
             SessionAuth::Grant { grant, .. } => Some(*grant),
         }
     }
@@ -496,7 +501,9 @@ pub struct Replica<S: Store> {
     /// RAM-only actual authenticated cloud key delivery; never loaded from Store.
     pub(crate) hosted_key_delivery: Option<admission::HostedKeyDelivery>,
     pub(crate) apply_blocked: Option<u64>,
-    pub(crate) apply_fault: bool,
+    /// Set once, by the first fence, until this instance is disposed
+    /// ([`Replica::fence`]).
+    pub(crate) apply_fault: Option<Fence>,
     /// The chain hash of seq 1 as applied by this store (`None` before seq 1).
     pub(crate) genesis: Option<mdbn_wire::common::Hash>,
     /// Committed prefix changes held until the failed apply barrier is verified.
@@ -530,6 +537,7 @@ pub struct Replica<S: Store> {
     /// Why a queued grant approval was dropped at its turn (RAM only).
     pub(crate) grant_approval_failures: BTreeMap<Uuid, String>,
     pub(crate) sessions: BTreeMap<SessionId, Session>,
+    local_web: Option<local_web::Authority>,
     pub(crate) next_session: u64,
     pub(crate) submitted_by: BTreeMap<Uuid, SessionId>,
     pub(crate) pushes: Vec<(SessionId, Push)>,
@@ -645,6 +653,11 @@ fn read_i64(store: &dyn Store, key: &str) -> Result<i64, StoreError> {
         .unwrap_or(0))
 }
 
+enum OpenHost {
+    Device(Option<Box<dyn crate::policy::GrantSource>>),
+    Hosted(Box<hosted::HostedState>),
+}
+
 impl<S: Store> Replica<S> {
     /// Open a replica over its store: load the head and catalog, and rebuild the
     /// local view from the pending queue.
@@ -656,7 +669,15 @@ impl<S: Store> Replica<S> {
         host: Host,
         secrets: DeviceSecrets,
     ) -> Result<Replica<S>, OpenError> {
-        Self::open_inner(cfg, store, planner, sealer, host, secrets, None)
+        Self::open_inner(
+            cfg,
+            store,
+            planner,
+            sealer,
+            host,
+            secrets,
+            OpenHost::Device(None),
+        )
     }
 
     /// Open with the trusted local host authority already installed, BEFORE any
@@ -671,7 +692,15 @@ impl<S: Store> Replica<S> {
         secrets: DeviceSecrets,
         source: Box<dyn crate::policy::GrantSource>,
     ) -> Result<Replica<S>, OpenError> {
-        Self::open_inner(cfg, store, planner, sealer, host, secrets, Some(source))
+        Self::open_inner(
+            cfg,
+            store,
+            planner,
+            sealer,
+            host,
+            secrets,
+            OpenHost::Device(Some(source)),
+        )
     }
 
     fn open_inner(
@@ -681,8 +710,12 @@ impl<S: Store> Replica<S> {
         sealer: Box<dyn Sealer>,
         host: Host,
         secrets: DeviceSecrets,
-        source: Option<Box<dyn crate::policy::GrantSource>>,
+        open_host: OpenHost,
     ) -> Result<Replica<S>, OpenError> {
+        let (source, hosted) = match open_host {
+            OpenHost::Device(source) => (source, None),
+            OpenHost::Hosted(state) => (None, Some(state)),
+        };
         // This gate is checked before key import, pending replay, recovery or any
         // reconcile/append/client route exists. It does not restrict OS access.
         if let Some(fence) = crate::mirror_admission::Fence::load(&store)? {
@@ -727,9 +760,14 @@ impl<S: Store> Replica<S> {
         }
         let head = store.head()?;
         let tail_stats = store.tail_stats()?;
-        let catalog = Arc::new(
-            crate::plan::load_catalog(&store).map_err(|e| OpenError::StoreAt("catalog", e))?,
-        );
+        let (catalog, stamp) = {
+            let resources = store
+                .resources()
+                .map_err(|e| OpenError::StoreAt("catalog", e))?;
+            let catalog = crate::plan::compile_catalog(&resources);
+            let stamp = crate::plan::record_meta_stamp(&catalog);
+            (Arc::new(catalog), stamp)
+        };
         let clock_floor = read_i64(&store, meta_keys::COUNTERS)?;
         // `log_state` is written by apply as `log_time ‖ sem_ratchet`.
         let (log_time, sem_ratchet) = match store.meta(meta_keys::LOG_STATE)? {
@@ -870,7 +908,7 @@ impl<S: Store> Replica<S> {
             private_switch,
             hosted_key_delivery: None,
             apply_blocked: None,
-            apply_fault: false,
+            apply_fault: None,
             genesis,
             apply_deferred_changed: BTreeSet::new(),
             log_move: LogMove::None,
@@ -890,6 +928,7 @@ impl<S: Store> Replica<S> {
             join_ahead: None,
             incidents: BTreeMap::new(),
             sessions: BTreeMap::new(),
+            local_web: None,
             next_session: 1,
             submitted_by: BTreeMap::new(),
             pushes: Vec::new(),
@@ -927,7 +966,7 @@ impl<S: Store> Replica<S> {
             grant_source: source,
             declared_setup_pending: BTreeMap::new(),
             declared_setup_rpc_job: None,
-            hosted: None,
+            hosted,
             attachment_uploads: attachment_upload::Uploads::default(),
             unindexed_uploads: unindexed_upload::Uploads::default(),
             reverse_text_sources: unindexed_reverse_text::Sources::default(),
@@ -951,6 +990,14 @@ impl<S: Store> Replica<S> {
         };
         r.restore_private_choice();
         r.check_key_trust();
+        if r.store.files_read_only() {
+            r.incident(
+                IncidentKind::ReadOnly,
+                Some(mdbn_wire::common::Value::Text(
+                    "this volume does not support atomic file replacement; opened read-only".into(),
+                )),
+            );
+        }
         let mut inst = [0u8; 8];
         r.host.entropy.fill(&mut inst);
         r.live.instance = u64::from_be_bytes(inst);
@@ -964,10 +1011,11 @@ impl<S: Store> Replica<S> {
         if r.local_only() {
             r.validate_local_pending_on_open()?;
         }
-        if derived_version < crate::store::DERIVED_DATA_VERSION {
+        if derived_version < crate::store::DERIVED_DATA_VERSION && !r.is_hosted() {
             // Reuse the catalog rebuild; never reset authoritative local state.
             // Stamp only after ALL pages succeed so an interrupted open retries.
-            r.reindex().map_err(|e| OpenError::StoreAt("reindex", e))?;
+            r.reindex(Some(query_index::Reindex::All))
+                .map_err(|e| OpenError::StoreAt("reindex", e))?;
             r.store.commit(crate::store::Tx {
                 meta: vec![(
                     meta_keys::DERIVED_VERSION.into(),
@@ -988,29 +1036,24 @@ impl<S: Store> Replica<S> {
         // Index entries derived under another catalog (a crash between a
         // catalog change and its reindex) are rederived.
         if r.install.is_none()
-            && r.store.meta(meta_keys::RECORD_META)?
-                != Some(crate::plan::record_meta_stamp(&r.store.resources()?))
+            && (r.store.meta(meta_keys::RECORD_META)?.as_ref() != Some(&stamp)
+                || (r.is_hosted() && derived_version < crate::store::DERIVED_DATA_VERSION))
         {
-            r.reindex().map_err(OpenError::Store)?;
+            if let Some(hosted) = r.hosted.as_mut() {
+                hosted.reindex_stamp = Some(stamp);
+                r.hosted_reindex_step()?;
+            } else {
+                r.reindex(Some(query_index::Reindex::Changed))
+                    .map_err(OpenError::Store)?;
+            }
         }
         // A store opened without a complete query index (older store, crash after
         // an invalidating write) is backfilled before serving. A budget refusal
         // leaves it unready, as after an install: the backend alone certifies
         // readiness, queries use the per-record path or decline visibly, and the
         // incident reports it. Other store errors stop the open.
-        match r.backfill_query_index() {
-            Ok(()) => {}
-            Err(StoreError::Full) => {
-                r.query_context = None;
-                r.incident(
-                    IncidentKind::Integrity,
-                    Some(mdbn_wire::common::Value::Text(
-                        "store: query index backfill: over budget".into(),
-                    )),
-                );
-            }
-            Err(e) => return Err(OpenError::StoreAt("query_index_backfill", e)),
-        }
+        r.backfill_query_index_within_budget()
+            .map_err(|error| OpenError::StoreAt("query_index_backfill", error))?;
         // Whatever the view captured while rebuilding is replaced by what the disk holds.
         r.before.clear();
         r.load_regressed().map_err(OpenError::Store)?;
@@ -1234,17 +1277,26 @@ impl<S: Store> Replica<S> {
         convert::wuuid(&mdbn_core::ids::Uuid::v7_from_parts(ms, r))
     }
 
+    /// Once fenced, the `integrity` incident is the fence's cause: every later
+    /// store call fails with `apply_reopen_required`, and those echoes neither
+    /// replace nor clear it.
     pub(crate) fn incident(
         &mut self,
         kind: IncidentKind,
         details: Option<mdbn_wire::common::Value>,
     ) {
+        if kind == IncidentKind::Integrity && self.apply_fault.is_some() {
+            return;
+        }
         self.incidents
             .insert(kind.value(), Incident { kind, details });
         self.status_dirty = true;
     }
 
     pub(crate) fn clear_incident(&mut self, kind: IncidentKind) {
+        if kind == IncidentKind::Integrity && self.apply_fault.is_some() {
+            return;
+        }
         if self.incidents.remove(&kind.value()).is_some() {
             self.status_dirty = true;
         }
@@ -1278,6 +1330,9 @@ impl<S: Store> Replica<S> {
             for row in rows {
                 rows_seen += 1;
                 max_order = max_order.max(row.order);
+                if self.local_only() && local_web::pending_owner(&row).is_some() {
+                    continue;
+                }
                 let replan = !changed.is_empty() && row.touches.iter().any(|k| changed.contains(k));
                 let effects = if replan {
                     self.stats.replanned += 1;

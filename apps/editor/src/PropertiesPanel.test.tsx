@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "./test/locale";
 import userEvent from "@testing-library/user-event";
-import type { CollectionTypeDescriptor } from "@mdbase-dev/connect";
+import type { CollectionTypeDescriptor } from "./connect-types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NoteDocument } from "./model";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -177,7 +177,7 @@ describe("typed note properties", () => {
     render(<PropertiesPanel note={{ ...eventNote, frontmatter: {}, types: [] }} types={[]} onClose={vi.fn()} onSave={vi.fn()} />);
     expect(screen.getByText(/Add a property to keep details/)).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Source" })).not.toBeInTheDocument();
-    const fields = screen.getByRole("tab", { name: "Properties" });
+    const fields = screen.getByRole("tab", { name: "Fields" });
     fields.focus();
     await user.keyboard("{ArrowRight}");
     expect(screen.getByRole("tab", { name: "Advanced" })).toHaveFocus();

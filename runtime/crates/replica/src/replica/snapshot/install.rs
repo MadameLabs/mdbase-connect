@@ -318,7 +318,7 @@ impl<S: Store> Replica<S> {
         // A control-read failure may have an unknown committed outcome. Do not
         // issue a staging cleanup transaction after the terminal fail-stop.
         // Known-abort recovery can still discard/refetch and finish an install.
-        if self.apply_fault {
+        if self.apply_fault.is_some() {
             return Err(StoreError::Io("apply_reopen_required".into()));
         }
         self.install_staged = Tx::default();
@@ -698,6 +698,8 @@ impl<S: Store> Replica<S> {
         };
         // Finish only after complete source authentication and the exact digest.
         let digest = self.install_rows.index.digest();
+        let catalog = self.install_rows.catalog();
+        let record_stamp = crate::plan::record_meta_stamp(&catalog);
         self.install_rows.clear();
         if digest != manifest.state_digest {
             return self.install_fail("state digest mismatch");
@@ -747,11 +749,19 @@ impl<S: Store> Replica<S> {
             staged.clear_confirmed = true;
         }
         staged.head = Some(head);
+        staged
+            .meta
+            .push((meta_keys::RECORD_META.into(), Some(record_stamp)));
         staged.meta.extend(source_meta);
         staged.meta.push((
             meta_keys::LOG_STATE.into(),
             log_state(log_time, sem_ratchet),
         ));
+        if self.is_hosted() {
+            staged
+                .meta
+                .push((meta_keys::HOSTED_RECORD_META_CURSOR.into(), None));
+        }
         staged
             .meta
             .push((LAST_MANIFEST.into(), manifest.to_bytes().ok()));
@@ -795,14 +805,12 @@ impl<S: Store> Replica<S> {
         // after `seq` are applied already and only advance the head on the tail read.
         self.install_points.clear();
         self.stats.snapshots_installed += 1;
-        match crate::plan::load_catalog(&self.store) {
-            Ok(c) => {
-                self.catalog = std::sync::Arc::new(c);
-                // Invalidate the cached query context after snapshot install.
-                self.query_context = None;
-            }
-            Err(e) => return self.install_abort(IncidentKind::Integrity, &format!("store: {e}")),
+        self.catalog = std::sync::Arc::new(catalog);
+        if let Some(hosted) = self.hosted.as_mut() {
+            hosted.reindex_stamp = None;
         }
+        self.reset_feed();
+        self.query_context = None;
         // The install replaced confirmed state; the derived query index follows.
         // A failure leaves it unready (queries use the per-record path) and is
         // reported, never swallowed.

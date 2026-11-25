@@ -16,20 +16,24 @@ pub(super) async fn call(
     // dispatch is attempted, a missing/invalid reply cannot prove refusal.
     let result = c.call_within(method, params, call_timeout(method)).await;
     match (result, unknown_outcome(method)) {
-        (
-            Err(ClientError::Io(_) | ClientError::Protocol(_) | ClientError::Timeout),
-            Some(message),
-        ) => Err(ClientError::Remote(ControlError::unavailable(
-            "outcome_unknown",
-            message,
-        ))),
+        (Err(e), Some(message)) if reply_missing(&e) => Err(ClientError::Remote(
+            ControlError::unavailable("outcome_unknown", message),
+        )),
         (other, _) => other,
+    }
+}
+
+/// No readable reply arrived, including one too large to deliver.
+fn reply_missing(e: &ClientError) -> bool {
+    match e {
+        ClientError::Io(_) | ClientError::Protocol(_) | ClientError::Timeout => true,
+        ClientError::Remote(e) => e.reason.as_deref() == Some("response_too_large"),
+        ClientError::NotRunning => false,
     }
 }
 
 fn call_timeout(method: &str) -> Duration {
     match method {
-        Method::MIGRATE_START => MIGRATE_START_TIMEOUT,
         Method::DEVICE_APPROVE => DEVICE_APPROVE_TIMEOUT,
         Method::COLLECTION_MODE => COLLECTION_MODE_TIMEOUT,
         Method::ACCESS_APPROVE | Method::SETTINGS_SET => CONFIRM_TIMEOUT,
@@ -50,12 +54,6 @@ fn unknown_outcome(method: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-
-/// `migrate start` answers only after the takeover run: the journal drain alone may
-/// take [`crate::takeover::DRAIN`], so the ordinary call bound would report a
-/// still-running takeover as an unreachable daemon.
-const MIGRATE_START_TIMEOUT: Duration = Duration::from_secs(600);
-const _: () = assert!(MIGRATE_START_TIMEOUT.as_secs() > crate::takeover::DRAIN.as_secs() * 2);
 
 /// `device approve` answers once the other computer has answered (its challenge
 /// lives two minutes) and the key grant is applied.
@@ -168,6 +166,15 @@ pub(super) async fn simple(
         print_collection(&c);
     } else {
         println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+        if method == Method::COLLECTION_HOLDS
+            && v.as_array().is_some_and(|holds| {
+                holds
+                    .iter()
+                    .any(|hold| hold["reason"] == "unknown_provenance")
+            })
+        {
+            eprintln!("{UNKNOWN_PROVENANCE_GUIDANCE}");
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

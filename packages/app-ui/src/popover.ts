@@ -58,6 +58,22 @@ function place(
   popover.style.setProperty("--overlay-origin", `${vertical} ${options.align === "end" ? "right" : "left"}`);
 }
 
+/**
+ * The topmost open modal `<dialog>`, if one is showing. A modal dialog makes everything outside
+ * its subtree inert—even a top-layer popover—so a popover opened while one is open mounts inside it.
+ */
+export function activeModalDialog(): HTMLDialogElement | null {
+  if (typeof document === "undefined") return null;
+  try {
+    const modal = document.querySelectorAll<HTMLDialogElement>("dialog:modal");
+    if (modal.length) return modal[modal.length - 1]!;
+  } catch {
+    // Fall through when :modal is unsupported.
+  }
+  const open = document.querySelectorAll<HTMLDialogElement>('dialog[open][aria-modal="true"]');
+  return open.length ? open[open.length - 1]! : null;
+}
+
 // Browsers without the Popover API (and jsdom) keep the element in place instead.
 function showInTopLayer(element: HTMLElement): void {
   if (typeof element.showPopover === "function") element.showPopover();
@@ -71,13 +87,16 @@ function onScreen(element: HTMLElement): boolean {
 
 /**
  * Shows a select's list in the top layer beside its trigger, focuses it, and dismisses it when
- * the pointer lands elsewhere or the page scrolls or resizes underneath it.
+ * the pointer lands elsewhere or the page scrolls or resizes underneath it. A list driven from
+ * a text field (`focusList: false`) leaves the focus where the typing is, and is placed again
+ * whenever `contentKey` changes, since its rows follow the text.
  */
 export function useSelectPopover(
   open: boolean,
   triggerRef: RefObject<HTMLElement | null>,
   listRef: RefObject<HTMLElement | null>,
-  onDismiss: () => void
+  onDismiss: () => void,
+  { focusList = true, contentKey }: { readonly focusList?: boolean; readonly contentKey?: string } = {}
 ): void {
   const dismiss = useEffectEvent(onDismiss);
   useLayoutEffect(() => {
@@ -86,8 +105,8 @@ export function useSelectPopover(
     if (!open || !list || !trigger) return undefined;
     showInTopLayer(list);
     place(trigger, list, { matchWidth: true });
-    list.focus({ preventScroll: true });
-  }, [open, triggerRef, listRef]);
+    if (focusList) list.focus({ preventScroll: true });
+  }, [open, triggerRef, listRef, focusList, contentKey]);
   useEffect(() => {
     const list = listRef.current;
     const trigger = triggerRef.current;

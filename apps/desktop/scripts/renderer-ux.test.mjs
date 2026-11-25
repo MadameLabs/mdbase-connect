@@ -244,6 +244,8 @@ for (const theme of ["light", "dark"]) {
       assert.equal(await page.locator("img.app-mark").count(), 0);
       assert.deepEqual(await page.getByRole("region", { name: "More apps from mdbase" }).locator(".app-tile strong").allTextContents(),
         ["Reader", "Writer", "Journal", "TaskNotes"]);
+      assert.equal(await page.locator(".mcp-connect-row").getByText("Claude, ChatGPT & Codex", { exact: true }).count(), 1);
+      assert.equal(await page.locator(".mcp-connect-row").getByText("https://mcp.mdbase.dev/mcp", { exact: true }).count(), 1);
       assert.equal(await page.getByRole("link", { name: /^Notes .*Editor$/ }).count(), 1);
       await screenshot(page, `parity-home-${theme}`);
       await yours.getByRole("button", { name: "Open Editor" }).click();
@@ -1250,6 +1252,25 @@ test("deleted collection keeps skipped-file details without repeating the deleti
     assert.ok((await notice.innerText()).includes("Not valid UTF-8"));
     await card.getByRole("button", { name: "Actions for Notes" }).click();
     assert.equal(await page.getByRole("menuitem", { name: "Remove", exact: true }).count(), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("an unknown-provenance hold explains where to resolve it and when to move the edit", async () => {
+  const { page, errors, calls } = await desktop({ collections: [collection({ sync: { holds: 1 } })] });
+  try {
+    await page.evaluate(() => {
+      window.fixture.holds = [{ id: "moved-note", path: "Renamed/note.md", reason: "unknown_provenance", since: Date.now(), saves: 1, has_theirs: true, binary: false }];
+    });
+    await nav(page, "Collections").click();
+    await collectionAction(page, "Review 1 file");
+    const hold = page.getByRole("listitem").filter({ hasText: "Renamed/note.md" });
+    await hold.getByText(/mdbase could not tell which version this file was based on/).waitFor();
+    await hold.getByText(/This hold exists only on this computer\. If another computer edited the file, it won’t show this hold\./).waitFor();
+    await hold.getByText(/Choose Keep both here to preserve both versions\. Once the computers agree, move the preserved edit to the intended folder if it is still in the old folder\./).waitFor();
+    await hold.getByRole("button", { name: "Keep both", exact: true }).click();
+    await page.getByText("Nothing is waiting.", { exact: true }).waitFor();
+    assert.deepEqual(await calls("resolveHold"), [["c-notes", "moved-note", "keep_both"]]);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

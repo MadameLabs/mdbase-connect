@@ -8,7 +8,7 @@ import {
   ApiError,
   type DevicePairing,
 } from "./api";
-import { finishDeniedPairing, rememberCollection, installationAccountLabel, installationRefusal, message, NEW_COLLECTION, pairingInspectionPath } from "./portal-model";
+import { finishDeniedPairing, pendingPairingChoice, rememberCollection, installationAccountLabel, installationRefusal, managedOriginsFor, message, NEW_COLLECTION, pairingInspectionPath } from "./portal-model";
 import { CollectionPicker, CollectionIdentity, RequestShell, fileActionLabel, useRequestExpiry } from "./authorization-review";
 import { RequestIdentity, RequestOutcome } from "./authorization-view";
 import { watchPairingCollections, watchPairingPreparation } from "./pairing-progress";
@@ -36,7 +36,10 @@ export function Pairing({ pairingId }: { pairingId: string }) {
   const [collectionIds,setCollectionIds] = useState<string[]>([]);
   const [createCollections,setCreateCollections] = useState(false);
   const [allowReminders,setAllowReminders] = useState(false);
-  const [selectedCollectionId,setSelectedCollectionId] = useState("");
+  const [chosenCollectionId,setChosenCollectionId] = useState("");
+  const selectedCollectionId = pairing?.recovery_collection_id && !pairing.approved_at
+    ? pairing.collections?.find(c => c.collection_id === pairing.recovery_collection_id)?.collection_id ?? ""
+    : chosenCollectionId;
   const [newCollectionName,setNewCollectionName] = useState("");
   const [removingId,setRemovingId] = useState("");
   const [revokingId,setRevokingId] = useState("");
@@ -57,8 +60,12 @@ export function Pairing({ pairingId }: { pairingId: string }) {
     if (current !== generation.current) return;
     setPairing(value);
     setCollectionIds([...new Set([...retainedIds(value), ...(value.approved_collection_ids ?? []), ...(value.approved_private_device_collection_ids ?? [])])]);
-    setSelectedCollectionId(value.creation && !value.creation.completed ? NEW_COLLECTION
-      : value.selected_collection_id || value.creation?.collection_id || "");
+    // A pick made on this page before the app sent the person away stays
+    // chosen when the app opens the page again, while it is still offered.
+    const kept = value.approved_at || !value.return_url ? null : pendingPairingChoice.read(pairingId);
+    setChosenCollectionId(value.creation && !value.creation.completed ? NEW_COLLECTION
+      : value.selected_collection_id || value.creation?.collection_id
+        || (kept && value.collections?.some(c => c.collection_id === kept) ? kept : ""));
     setNewCollectionName(value.creation?.display_name ?? "");
     setCreateCollections(value.retained_create_collections || value.approved_create_collections || value.requested_create_collections || false);
     setAllowReminders(value.timer_consent === true);
@@ -70,7 +77,7 @@ export function Pairing({ pairingId }: { pairingId: string }) {
     setCollectionIds([]);
     setCreateCollections(false);
     setAllowReminders(false);
-    setSelectedCollectionId("");
+    setChosenCollectionId("");
     setNewCollectionName("");
     setDeepLink("");
     setError("");
@@ -117,7 +124,9 @@ export function Pairing({ pairingId }: { pairingId: string }) {
       isDispatching: () => dispatching.current,
       onReady: setPairing,
       onError: reason => setPreparationError(message(reason)),
-      onTimeout: () => setPreparationError(t(i18n)`We couldn't prepare ${pairing.connector_name}.`),
+      // An app with a way back is suspended while this page is in front: it is
+      // not a failure that it hasn't prepared; the page offers the way back.
+      onTimeout: () => setPreparationError(pairing.return_url ? "" : t(i18n)`We couldn't prepare ${pairing.connector_name}.`),
     });
   },[pairing,pairingId,inspectionPath,outcome]);
   useEffect(()=>{
@@ -128,7 +137,7 @@ export function Pairing({ pairingId }: { pairingId: string }) {
       ready:value=>!!value.native_authorization_id || !!value.approved_at,
       onReady:value=>setPairing(value),
       onError:reason=>setPreparationError(message(reason)),
-      onTimeout:()=>setPreparationError(t(i18n)`We couldn't prepare ${pairing.connector_name}. Make sure the app is up to date.`),
+      onTimeout:()=>setPreparationError(pairing.return_url ? "" : t(i18n)`We couldn't prepare ${pairing.connector_name}. Make sure the app is up to date.`),
     });
   },[pairing,inspectionPath,outcome]);
 
@@ -161,7 +170,15 @@ export function Pairing({ pairingId }: { pairingId: string }) {
             // This is not authority: ready() still requires the server's confirmation.
             accountSelectionSucceeded.current = true;
           }
-          approval = await new Promise<DevicePairing>((resolve, reject) => {
+          if (pairing.return_url) {
+            // The app prepares only once the person goes back to it (its way
+            // back is offered on this page), so don't hold the page waiting.
+            approval = (await api<{pairing:DevicePairing}>(inspectionPath)).pairing;
+            if (current !== generation.current) return;
+            setPairing(approval);
+            if (approval.approved_at) return;
+            if (!ready(approval)) return;
+          } else approval = await new Promise<DevicePairing>((resolve, reject) => {
             const stop = watchPairingPreparation<DevicePairing>({
               read: async signal => (await api<{pairing:DevicePairing}>(inspectionPath, {signal})).pairing,
               isDispatching: () => false,
@@ -189,7 +206,7 @@ export function Pairing({ pairingId }: { pairingId: string }) {
         approval = inspected.pairing;
         if (!inspected.pairing.creation?.completed || inspected.pairing.creation.collection_id !== created.collection_id || !inspected.pairing.collections?.some(collection=>collection.collection_id===created.collection_id)) throw new Error(t(i18n)({ message: "We couldn't confirm collection creation finished. Please try again." }));
         selected = created.collection_id;
-        setSelectedCollectionId(selected);
+        setChosenCollectionId(selected);
         setNewCollectionName(inspected.pairing.creation.display_name);
       }
       const privateChoice=approval.collections?.some(c=>c.collection_id===selected && c.kind==="private")===true;
@@ -208,10 +225,12 @@ export function Pairing({ pairingId }: { pairingId: string }) {
         return;
       }
       if (action === "deny") {
+        pendingPairingChoice.clear(pairingId);
         if (finishDeniedPairing(pairing, window) === "cancelled") setOutcome("cancelled");
         return;
       }
       if (action === "approve" && pairing.installation_device && !pairing.file_access) rememberCollection(selected);
+      if (action === "approve") pendingPairingChoice.clear(pairingId);
       if (action==="approve" && result.native_authorization_uri) {
         const target=new URL(result.native_authorization_uri,location.origin);
         if (target.origin!==location.origin || target.pathname!=="/oauth/authorize" || target.searchParams.get("request_id")!==approval.native_authorization_id) throw new Error(t(i18n)({ message: "The original app approval changed." }));
@@ -245,7 +264,7 @@ export function Pairing({ pairingId }: { pairingId: string }) {
             approved = !!inspected.pairing.approved_at;
             if (inspected.pairing.creation && selectedCollectionId === NEW_COLLECTION) {
               setNewCollectionName(inspected.pairing.creation.display_name);
-              setSelectedCollectionId(inspected.pairing.creation.completed ? inspected.pairing.creation.collection_id : NEW_COLLECTION);
+              setChosenCollectionId(inspected.pairing.creation.completed ? inspected.pairing.creation.collection_id : NEW_COLLECTION);
             }
           }
         } catch { /* Keep the original failure, not a replacement request. */ }
@@ -340,7 +359,8 @@ export function Pairing({ pairingId }: { pairingId: string }) {
   // An app opened in the system browser (Android, iOS) is suspended while this
   // page is in front, so it cannot prepare. Send the person back to it; the app
   // prepares and shows this page again (tasknotes-app#492).
-  const continueInApp=pairing.return_url ? <p><a className="mdbase-button is-secondary" href={pairing.return_url}><Trans>Continue in {appName}</Trans></a></p> : null;
+  const waitsForApp=!!pairing.return_url && !!pairing.account_selection_confirmed && (!pairing.attested || (privateChoice && !pairing.native_authorization_id));
+  const preparing=(error:string)=>error || (pairing.return_url ? t(i18n)`Continue in ${pairing.connector_name} to finish. This page opens again when it's ready.` : t(i18n)`Preparing ${pairing.connector_name}…`);
   // Collections this approval would newly give this device the key to.
   const deviceAccess=!privateChoice && (pairing.collections??[]).some(c=>c.kind==="private_device" && !retained.includes(c.collection_id) && (c.collection_id===selectedCollectionId || collectionIds.includes(c.collection_id)));
   const details = <details className="mdbase-disclosure installation-details">
@@ -421,8 +441,10 @@ export function Pairing({ pairingId }: { pairingId: string }) {
               </>
             ) : pairing.approved_at ? (
               <>
-                <RequestOutcome status="approved" applicationName={pairing.connector_name} collectionName={selectedName}
-                  collectionKind={privateChoice ? "private" : "cloud_copy"} returnUrl={handBack.current ? pairing.return_url ?? "" : ""} />
+                <RequestOutcome status="approved" applicationName={pairing.connector_name} applicationOrigin={pairing.app_origin}
+                  collectionId={selectedCollectionId && selectedCollectionId !== NEW_COLLECTION ? selectedCollectionId : pairing.selected_collection_id || pairing.creation?.collection_id || undefined}
+                  collectionName={selectedName} collectionKind={privateChoice ? "private" : "cloud_copy"}
+                  origins={managedOriginsFor()} returnUrl={handBack.current ? pairing.return_url ?? "" : ""} />
                 {!handBack.current && pairing.return_url && <a className="mdbase-button outcome-return" href={pairing.return_url}><Trans>Return to {literal(pairing.connector_name)}</Trans></a>}
                 {pairing.timer_declaration && <p role="status">{pairing.timer_consent
                   ? t(i18n)({ message: "You allowed reminders for the selected collections." })
@@ -440,14 +462,14 @@ export function Pairing({ pairingId }: { pairingId: string }) {
                     <a className="mdbase-button installation-account-action" href={`/login?return_to=${encodeURIComponent(location.href)}`}><Trans>Sign in again</Trans></a>
                   </>
                 )}
-                {pairing.account_selection_confirmed && !pairing.attested && <><p role="status">{preparationError || t(i18n)`Preparing ${pairing.connector_name}…`}</p>{continueInApp}</>}
+                {pairing.account_selection_confirmed && !pairing.attested && <p role="status">{preparing(preparationError)}</p>}
                     <CollectionPicker
                       label={t(i18n)`Open in ${pairing.connector_name}`}
                       collections={(pairing.collections ?? []).map(collection=>({id:collection.collection_id,name:collection.display_name,kind:collection.kind ? "private" as const : "cloud_copy" as const,
                         location: collectionLocation(collection.kind),
                         hint:collection.role&&collection.role!=="owner"?t(i18n)`Shared with you`:undefined}))}
-                      value={selectedCollectionId} onChoose={setSelectedCollectionId} disabled={busy}
-                      onCreate={pairing.can_create_collection && !pairing.creation?.completed ? ()=>setSelectedCollectionId(NEW_COLLECTION) : undefined}
+                      value={selectedCollectionId} onChoose={id=>{setChosenCollectionId(id);if(pairing.return_url)pendingPairingChoice.write(pairingId,id);}} disabled={busy}
+                      onCreate={pairing.can_create_collection && !pairing.creation?.completed ? ()=>setChosenCollectionId(NEW_COLLECTION) : undefined}
                       creationSelected={selectedCollectionId===NEW_COLLECTION}
                     />
                     {selectedCollectionId === NEW_COLLECTION && <div className="installation-choice">
@@ -457,8 +479,8 @@ export function Pairing({ pairingId }: { pairingId: string }) {
                       {pairing.creation && <small role="status"><Trans>Creation hasn't finished. Approve continues the same named collection.</Trans></small>}
                     </div>}
                     {privateChoice && <p className="field-note"><Trans>This collection stays on your computer. It can connect when a computer signed in to this account is available.</Trans></p>}
-                    {privateChoice && !pairing.native_authorization_id && <><p role="status">{preparationError || t(i18n)`Preparing ${pairing.connector_name}…`}</p>{continueInApp}</>}
-                    {!privateChoice && (pairing.collections?.some(c=>c.kind!=="private") || retained.length || pairing.requested_create_collections || pairing.retained_create_collections) ? <details className="mdbase-disclosure installation-advanced">
+                    {privateChoice && !pairing.native_authorization_id && (pairing.account_selection_confirmed || !pairing.return_url) && <p role="status">{preparing(preparationError)}</p>}
+                    {!pairing.recovery_collection_id && !privateChoice && (pairing.collections?.some(c=>c.kind!=="private") || retained.length || pairing.requested_create_collections || pairing.retained_create_collections) ? <details className="mdbase-disclosure installation-advanced">
                       <summary><Trans>Allow offline access to additional collections</Trans></summary>
                       <CheckboxGroup legend={t(i18n)({ message: "Additional collection access" })} disabled={busy}>
                         {(pairing.collections??[]).filter(c=>c.kind!=="private").map(collection=>(
@@ -499,12 +521,13 @@ export function Pairing({ pairingId }: { pairingId: string }) {
                       </div>
                       <div className="approval-actions">
                     <button className="mdbase-button is-tertiary" disabled={busy} onClick={() => void act("deny")}><Trans>Cancel</Trans></button>
+                    {waitsForApp ? <a className="mdbase-button is-primary" href={pairing.return_url!}><Trans>Continue in {appName}</Trans></a> :
                     <button className="mdbase-button is-primary"
                       aria-describedby={`pairing-target-${pairingId}`}
                       disabled={busy || !installationAccountLabel(pairing) || !selectedCollectionId || (selectedCollectionId===NEW_COLLECTION ? !pairing.can_create_collection || !newCollectionName.trim() : !pairing.collections?.some(collection=>collection.collection_id===selectedCollectionId))}
                       onClick={()=>void act("approve")}>
                       {busy ? t(i18n)({ message: "Approving…", context: "Collection connection" }) : t(i18n)`Open ${pairing.connector_name}`}
-                    </button>
+                    </button>}
                       </div>
                     </footer>
               </>

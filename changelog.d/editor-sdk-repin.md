@@ -1,3 +1,3 @@
 ## Changed
 
-- Pin the Editor to the original production SDK 0.1.18 from 29ed1fb2066f4d9618d38f93f14ac6fc0ba64464 and its byte-identical bundled protocol.
+- Pin the Editor, the shared app UI's development SDK and the MCP service to the original production SDK 0.2.1 from 884f642bf70a59990cc82c7bc0abdfcf248021aa, and the Editor to its byte-identical bundled protocol.

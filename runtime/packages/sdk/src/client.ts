@@ -148,13 +148,20 @@ export interface ChangesWatch {
   readonly ready: Promise<void>;
   readonly state: ChangesWatchState;
   readonly error: MdbaseError | null;
+  /** The feed position this watch has delivered up to: the last batch's
+   * cursor, or the last catch-up page's when it had nothing to deliver.
+   * `undefined` until the first catch-up read. A cache that has applied every
+   * delivered batch can stop the watch and later resume with
+   * `watchChanges(onChanges, { cursor })`; a cursor the replica can no longer
+   * serve resumes with `reset: true`. */
+  readonly cursor: string | undefined;
   subscribe(listener: (state: ChangesWatchState, error: MdbaseError | null) => void): () => void;
 }
 
 /** Changes asked for at a time while a watch catches up from its cursor. */
 const CHANGES_PAGE = 1000;
 /** With `waitForDevice`: the computer is offline, or online but not serving the collection yet. */
-const DEVICE_WAITS = new Set(["no_device_online", "not_served"]);
+const DEVICE_WAITS = new Set(["no_device_online", "not_served", "device_not_serving"]);
 
 /** A spec 11 query object. Plain objects are converted to data maps. */
 export type Query = {
@@ -266,6 +273,8 @@ export interface CreateInput {
 }
 
 export interface UpdateInput {
+  /** Refuse with not_found/deleted rather than restoring a tombstone at replay. */
+  requireLive?: boolean;
   /** Rewrite inbound links on path-stored field moves (default true). */
   updateRefs?: boolean;
   /** Set these top-level keys. */
@@ -1562,13 +1571,15 @@ export class MdbaseClient {
     return r.preflight ?? { rewrites: [], broken: [] };
   }
 
-  /** Every page of a query. `o.include` and `o.signal` apply to every page.
+  /** Every cursor page of a query. The page size defaults to 500 when `limit`
+   * is omitted. `o.include` and `o.signal` apply to every page.
    * Cursor resets require explicit caller clearing through `o.onReset`;
    * otherwise cursor_expired/cursor_stale is thrown unchanged. The query and
    * `o` are captured when iteration starts. */
   async *pages(query: Query, o: RecordReadOptions & PagesOptions = {}): AsyncGenerator<QueryResult> {
     const { include, signal, onReset } = o;
     const original = snapshotQueryValue(query) as Query;
+    if (original.limit === undefined) original.limit = 500;
     const originalInclude = include ? { ...include } : undefined;
     const read: RecordReadOptions = { ...(originalInclude ? { include: originalInclude } : {}), ...(signal ? { signal } : {}) };
     let cursor = original.cursor, restarted = false, pagesYielded = 0;
@@ -1810,7 +1821,7 @@ export class MdbaseClient {
       notify(listener);
       return () => { listeners.delete(listener); };
     } });
-    Object.defineProperties(watch, { state: { get: () => state }, error: { get: () => error } });
+    Object.defineProperties(watch, { state: { get: () => state }, error: { get: () => error }, cursor: { get: () => last } });
     return Object.freeze(watch) as ChangesWatch;
   }
 
@@ -2003,6 +2014,7 @@ export class MdbaseClient {
     if (plan.patch.size) op.patch = plan.patch;
     if (plan.unset.length) op.unset = plan.unset;
     if (plan.base.length) op.base = plan.base;
+    if (c.requireLive) op.requireLive = true;
     if (c.updateRefs !== undefined) op.updateRefs = c.updateRefs;
     if (c.ifRevision) op.ifRevision = c.ifRevision;
     return this.record(op, o);
@@ -2013,6 +2025,7 @@ export class MdbaseClient {
     if (c.contract || c.promote) throw mdbaseError("invalid_request", "contract updates are mapped by the replica; use update()");
     const op: Op & { kind: "update" } = { kind: "update", id: refId(target) };
     const seen = typeof target === "object" && "frontmatter" in target ? (target as RecordView) : null;
+    if (c.requireLive) op.requireLive = true;
     if (c.updateRefs !== undefined) op.updateRefs = c.updateRefs;
     if (c.patch) op.patch = toFmMap(c.patch);
     if (c.unset?.length) op.unset = c.unset;

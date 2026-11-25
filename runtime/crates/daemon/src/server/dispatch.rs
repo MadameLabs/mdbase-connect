@@ -98,23 +98,7 @@ impl Daemon {
             Method::STATUS | Method::STATUS_SUBSCRIBE => to_value(&self.status().await),
             // `serve_control` stops the daemon once this reply is queued.
             Method::SHUTDOWN => Ok(json!({})),
-            Method::COLLECTION_LIST => {
-                let inner = self.inner.lock().await;
-                let taken = self.takeover_record();
-                let mut collections = Vec::with_capacity(inner.hosts.len());
-                for host in &inner.hosts {
-                    collections.push(with_private_sync_pending(
-                        with_takeover_holds(
-                            with_access_notices(host.observed_status().await, &inner.access),
-                            taken.as_ref(),
-                        ),
-                        &self.auto_private,
-                        &self.profile.state_dir.join("collections"),
-                    ));
-                }
-                bound_file_notices(&mut collections);
-                to_value(&collections)
-            }
+            Method::COLLECTION_LIST => to_value(&self.collection_statuses().await),
             Method::COLLECTION_ADD => self.add(params(req)?).await,
             Method::COLLECTION_REMOVE => {
                 let p: CollectionRef = params(req)?;
@@ -132,13 +116,8 @@ impl Daemon {
             }
             Method::COLLECTION_PAUSE | Method::COLLECTION_RESUME => {
                 let p: CollectionRef = params(req)?;
-                let out = self
-                    .set_paused(&p.collection, req.method == Method::COLLECTION_PAUSE)
-                    .await;
-                if out.is_ok() && req.method == Method::COLLECTION_RESUME {
-                    self.spawn_auto_private();
-                }
-                out
+                self.set_paused(&p.collection, req.method == Method::COLLECTION_PAUSE)
+                    .await
             }
             Method::COLLECTION_HOLDS => {
                 let p: CollectionRef = params(req)?;
@@ -192,20 +171,6 @@ impl Daemon {
             Method::PRIVATE_PASSWORD => self.private_password(params(req)?).await,
             Method::PRIVATE_STRICT => self.private_strict().await,
             Method::DOCTOR => to_value(&self.doctor().await),
-            Method::MIGRATE_STATUS => {
-                let refresh =
-                    req.params.get("refresh_rollout").and_then(Value::as_bool) == Some(true);
-                self.spawn(self.clone().retry_takeover(refresh));
-                self.takeover_status().await
-            }
-            Method::MIGRATE_START => {
-                let p: crate::control::MigrateStart = params(req)?;
-                let out = self.clone().takeover_run(p.stop_mirrors, false).await;
-                if out.is_ok() {
-                    self.spawn(self.clone().auto_private());
-                }
-                out
-            }
             Method::ACCESS_LIST => {
                 let c: Option<String> = req
                     .params
@@ -213,7 +178,7 @@ impl Daemon {
                     .and_then(Value::as_str)
                     .map(str::to_string);
                 let inner = self.inner.lock().await;
-                to_value(&inner.access.list(c.as_deref()))
+                to_value(&inner.access.summaries(c.as_deref()))
             }
             Method::ACCESS_REVOKE | Method::ACCESS_DENY => {
                 let p: GrantRef = params(req)?;
@@ -280,11 +245,23 @@ impl Daemon {
                 self.confirm(&prompt).await?;
                 self.approve_confirmed(&expected).await
             }
-            Method::ACCESS_ACK => {
-                let p: GrantRef = params(req)?;
-                self.access_change(|l| l.acknowledge(&p.grant).cloned())
-                    .await
-            }
+            Method::ACCESS_ACK => match params(req)? {
+                crate::control::AckAccess {
+                    grant: Some(grant),
+                    collection: None,
+                } => self.access_change(|l| l.acknowledge(&grant).cloned()).await,
+                crate::control::AckAccess {
+                    grant: None,
+                    collection: Some(collection),
+                } => {
+                    self.access_change(|l| Ok(l.acknowledge_collection(&collection)))
+                        .await
+                }
+                _ => Err(ControlError::invalid(
+                    "invalid_params",
+                    "access.ack: give either grant or collection",
+                )),
+            },
             Method::ACCOUNT_SIGN_IN => self.sign_in(req).await,
             Method::ACCOUNT_SIGN_OUT => self.sign_out().await,
             Method::ACTIVITY_LIST => {
@@ -410,7 +387,23 @@ pub(super) async fn serve_control(d: Arc<Daemon>, stream: BoxStream) -> std::io:
     // instead could lose the reply to `shutdown`.
     let writer = tokio::spawn(async move {
         while let Some(resp) = rx.recv().await {
-            let bytes = serde_json::to_vec(&resp).unwrap_or_default();
+            let mut bytes = serde_json::to_vec(&resp).unwrap_or_default();
+            // The client cannot read a frame over the limit; answer the request
+            // with an error it can read instead.
+            if bytes.len() > ipc::MAX_CONTROL_FRAME
+                && let Some(id) = resp.id
+            {
+                tracing::warn!(
+                    id,
+                    bytes = bytes.len(),
+                    "control reply over the frame limit"
+                );
+                bytes = serde_json::to_vec(&Response::err(
+                    id,
+                    ControlError::response_too_large(bytes.len()),
+                ))
+                .unwrap_or_default();
+            }
             if ipc::write_frame(&mut wr, &bytes).await.is_err() {
                 break;
             }

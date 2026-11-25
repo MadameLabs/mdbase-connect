@@ -539,6 +539,11 @@ msgstr "まずコレクションを追加してください。"
 msgid "Add a new {0} type"
 msgstr "新しい {0} 型を追加"
 
+#. placeholder {0}: literal(request.application_name)
+#: src/authorization-view.tsx
+msgid "Add and sync your folder in mdbase Desktop, then return to this page. If this request expires while you set up Desktop, connect again from {0}."
+msgstr "mdbase Desktop でフォルダを追加して同期してから、このページに戻ってください。Desktop の設定中にこのリクエストの有効期限が切れた場合は、{0} から再度接続してください。"
+
 #: src/ConnectApp.tsx
 #: src/HomePage.tsx
 #: src/portal-commands.ts
@@ -664,6 +669,10 @@ msgstr "アカウントをお持ちですか？ <0>ログイン</0>"
 #: src/authority-workflows.tsx
 msgid "Already-allowed access stays in place. Revoke access separately if you no longer want it."
 msgstr "許可済みのアクセスはそのまま維持されます。不要になった場合は別途取り消してください。"
+
+#: src/authorization-view.tsx
+msgid "Also works with {collectionName}"
+msgstr "{collectionName} で使えるほかのアプリ"
 
 #: src/AccountManagement.tsx
 msgid "Always on"
@@ -1165,6 +1174,11 @@ msgstr "この mdbase Connect 環境の管理者にお問い合わせくださ�
 msgid "Continue"
 msgstr "続行"
 
+#. placeholder {0}: pairing.connector_name
+#: src/authority-workflows.tsx
+msgid "Continue in {0} to finish. This page opens again when it's ready."
+msgstr "{0} で続けて完了してください。準備ができると、このページがもう一度開きます。"
+
 #: src/authorization-view.tsx
 msgid "Continue in {applicationName} to use this collection."
 msgstr "このコレクションを使用するには、{applicationName} で続行してください。"
@@ -1237,6 +1251,10 @@ msgstr "作成"
 #: src/authorization-view.tsx
 msgid "Create a collection"
 msgstr "コレクションを作成"
+
+#: src/authorization-view.tsx
+msgid "Create a new collection below, or sync an existing folder in mdbase Desktop first."
+msgstr "下から新しいコレクションを作成するか、先に mdbase Desktop で既存のフォルダを同期してください。"
 
 #: src/authorization-review.tsx
 msgid "Create a new collection…"
@@ -1508,6 +1526,10 @@ msgctxt "Connect interface"
 msgid "Downloads only"
 msgstr "ダウンロードのみ"
 
+#: src/authorization-view.tsx
+msgid "Each app asks for your approval before accessing {collectionName}. Your files remain ordinary Markdown."
+msgstr "各アプリは {collectionName} にアクセスする前に承認を求めます。ファイルは通常の Markdown のままです。"
+
 #: src/authorization-capabilities.ts
 msgctxt "Application access approval"
 msgid "Edit records"
@@ -1712,6 +1734,10 @@ msgstr "コードを生成"
 msgctxt "Account management"
 msgid "Generating…"
 msgstr "生成中…"
+
+#: src/authorization-view.tsx
+msgid "Get mdbase Desktop"
+msgstr "mdbase Desktop を入手"
 
 #: src/portal-model.ts
 msgid "GitHub account @{login}"
@@ -1948,10 +1974,6 @@ msgstr "ユーザーを読み込み中…"
 #: src/authorization-view.tsx
 msgid "Loading the request…"
 msgstr "リクエストを読み込み中…"
-
-#: src/AccountManagement.tsx
-msgid "Local collection and mirror files remain on your computers."
-msgstr "ローカルコレクションとミラーファイルはコンピューター上に残ります。"
 
 #: src/AccountManagement.tsx
 msgid "Local collection files stay on your computers and are not measured here."
@@ -2294,6 +2316,8 @@ msgstr "{0} のみ。隠しフォルダーは常に除外されます。"
 msgid "Only this type definition changes. Existing records stay in place. Setup is validated before access becomes active."
 msgstr "変更されるのはこの型定義だけです。既存のレコードはそのまま残ります。アクセスが有効になる前に設定が検証されます。"
 
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open"
 msgstr "開く"
@@ -2301,6 +2325,8 @@ msgstr "開く"
 #. placeholder {0}: app.name
 #. placeholder {0}: pairing.connector_name
 #: src/authority-workflows.tsx
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open {0}"
 msgstr "{0} を開く"
@@ -2376,6 +2402,11 @@ msgstr "メールのリンクをもう一度開くか、アカウント設定で
 #: src/ConnectApp.tsx
 msgid "Open the mdbase Connect desktop app and choose Connect this computer."
 msgstr "mdbase Connect デスクトップアプリを開き、「このコンピューターを接続」を選んでください。"
+
+#: src/ConnectApp.tsx
+msgctxt "Connect interface"
+msgid "Open this collection in"
+msgstr "このコレクションを開くアプリ"
 
 #: src/auth-view.tsx
 msgid "Open this through Tailscale"
@@ -2645,6 +2676,15 @@ msgctxt "Connect interface"
 msgid "Remove access"
 msgstr "アクセスを削除"
 
+#: src/ApplicationAccess.tsx
+msgid "Remove installation"
+msgstr "インストールを削除"
+
+#. placeholder {0}: group.applicationName
+#: src/ApplicationAccess.tsx
+msgid "Remove only this installation of {0} from your account?"
+msgstr "アカウントから {0} のこのインストールだけを削除しますか？"
+
 #. placeholder {0}: member.name
 #. placeholder {1}: collection.display_name ?? collection.id
 #: src/ConnectApp.tsx
@@ -2659,6 +2699,7 @@ msgstr "アクセス権を削除中…"
 msgid "Removing app and folder access…"
 msgstr "アプリとフォルダーへのアクセスを削除中…"
 
+#: src/ApplicationAccess.tsx
 #: src/ConnectApp.tsx
 msgctxt "Connect interface"
 msgid "Removing…"
@@ -3182,6 +3223,7 @@ msgctxt "Account management"
 msgid "Signing out…"
 msgstr "ログアウト中…"
 
+#: src/AccountManagement.tsx
 #: src/api.ts
 #: src/ConnectPrimitives.tsx
 #: src/portal-model.ts
@@ -3515,6 +3557,10 @@ msgid "Those browsers will need to sign in again. This browser stays signed in."
 msgstr "それらのブラウザーでは再度ログインが必要になります。このブラウザーのログイン状態は維持されます。"
 
 #: src/ConnectApp.tsx
+msgid "To delete this collection, open the collection list in the editor. Open the menu next to the collection name and choose “Delete collection…”."
+msgstr "このコレクションを削除するには、エディターでコレクション一覧を開きます。コレクション名の横のメニューから「コレクションを削除…」を選んでください。"
+
+#: src/ConnectApp.tsx
 msgid "Try a different computer name. Filtering does not revoke access."
 msgstr "別のコンピューター名をお試しください。絞り込みでアクセス権が取り消されることはありません。"
 
@@ -3649,6 +3695,10 @@ msgstr "ローカルフォルダーを使用"
 #: src/ConnectApp.tsx
 msgid "Use a single-line collection name."
 msgstr "コレクション名は一行で入力してください。"
+
+#: src/authorization-view.tsx
+msgid "Use an existing folder or Obsidian vault"
+msgstr "既存のフォルダまたは Obsidian Vault を使う"
 
 #: src/ConnectApp.tsx
 msgid "Use an existing person or create a note"

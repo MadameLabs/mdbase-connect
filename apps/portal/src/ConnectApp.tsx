@@ -17,7 +17,8 @@ import { useCallback, useEffect, useRef, useState, Component, type FormEvent, ty
 import { AccountManagement, DeletedAccount } from "./AccountManagement";
 import {readCollectionCreation, keepCollectionCreation, finishCollectionCreation, type CollectionCreationIntent} from "./collection-creation-intent";
 import { Brand, ThemeMenu } from "./portal-ui";
-import { readRememberedCollection, rememberCollection, signInRedirectUrl } from "./portal-model";
+import { managedOriginsFor, readRememberedCollection, rememberCollection, signInRedirectUrl } from "./portal-model";
+import { AppTile, McpConnectRow, collectionDiscoveryApps, type ManagedAppOrigins } from "@mdbase/connect-ui/home";
 import { CommandPalette, shortcutLabel } from "@mdbase-dev/ui/command-palette";
 import { KeyboardShortcuts } from "@mdbase/connect-ui/keyboard";
 import { ConfirmAction } from "@mdbase/connect-ui/confirm-action";
@@ -45,11 +46,11 @@ import {
   RouteLink,
   type ConnectView,
   relativeTime,
-  errorMessage
+  errorMessage,
+  isCollectionQuotaRefusal
 } from "./ConnectPrimitives";
 import { FeedbackPage } from "./FeedbackPage";
 import { HomePage } from "./HomePage";
-import { managedAppOrigins } from "../../../scripts/lib/managed-app-origins.mjs";
 import { FeedbackButton, FeedbackProvider, feedbackApplication, useFeedback, resolveFeedbackEndpoint, type FeedbackFailure } from "@mdbase-dev/ui/feedback";
 import {
   CloudIcon as Cloud,
@@ -77,8 +78,6 @@ type BusyOperations = ReadonlySet<string>;
 
 const management = new ConnectManagementClient(location.origin);
 const desktopReleaseUrl = "https://mdbase.dev/downloads/";
-/** This portal's managed environment, whose official apps Home suggests; none for a custom server. */
-const environmentOrigins = Object.values(managedAppOrigins).find((origins) => origins.connectOrigin === location.origin);
 export function ConnectApp() {
   useLocaleRevision();
   const [context, setContext] = useState<{ view: ConnectView; collectionName?: string }>({ view: viewFromPath() });
@@ -100,6 +99,7 @@ class ManagementErrorBoundary extends Component<{ children: ReactNode }, { faile
 
 function ConnectWorkspace({ onFeedbackContext }: { onFeedbackContext(view: ConnectView, collectionName?: string): void }) {
   useLocaleRevision();
+  const environmentOrigins = managedOriginsFor();
   const { reportError, enabled: feedbackEnabled } = useFeedback();
   const [accountDeleted, setAccountDeleted] = useState(location.pathname === "/account-deleted");
   const [view, setView] = useState<ConnectView>(viewFromPath);
@@ -391,7 +391,7 @@ function ConnectWorkspace({ onFeedbackContext }: { onFeedbackContext(view: Conne
       {pendingRequest && <PendingRequestBanner request={pendingRequest} collectionName={pendingCollection?.name} count={data.pending_authorizations.length} />}
       {activeView === "home" && <HomePage data={data} collections={collections} applications={homeApplications} origins={environmentOrigins} navigate={navigate} />}
       {activeView === "overview" && (selectedCollection
-        ? <CollectionOverview editorOrigin={editorOrigin} collection={selectedCollection} applications={selectedApplications} />
+        ? <CollectionOverview editorOrigin={editorOrigin} origins={environmentOrigins} collection={selectedCollection} applications={selectedApplications} />
         : <Collections error={mutationError} key={data.user.id} editorOrigin={editorOrigin} data={data} busy={busy} perform={perform} navigate={navigate} />)}
       {activeView === "storage" && selectedCollection && <Storage error={mutationError} editorOrigin={editorOrigin} collection={selectedCollection} busy={busy} perform={perform} />}
       {activeView === "access" && !refreshError && selectedCollection && <AppAccess error={mutationError} collectionName={selectedCollection.name} groups={selectedApplications} client={management} busy={busy} perform={perform}>
@@ -441,20 +441,42 @@ function PendingRequestBanner({ request, collectionName, count }: {
   </a>;
 }
 
-function CollectionOverview({ collection, applications, editorOrigin }: {
+function CollectionOverview({ collection, applications, editorOrigin, origins }: {
   editorOrigin?: string;
+  origins?: ManagedAppOrigins;
   collection: CollectionRow;
   applications: ReturnType<typeof applicationGroups>;
 }) {
   useLocaleRevision();
   const place = collection.kind === "hosted" ? collection.detail : [collection.status, collection.detail].filter(Boolean).join(" · ");
-  return <Page reading title={collection.name} status={<span className="connect-status">{collection.glyph !== "idle" && <StatusGlyph state={collection.glyph} />}{place}</span>} action={editorOrigin && (collection.kind !== "local" || collection.available) && <a className="mdbase-button is-primary" aria-label={t(i18n)`Open in editor: ${collection.name}`} href={editorCollectionUrl(collection.id, editorOrigin)}><Trans>Open in editor</Trans></a>}>
+  const usable = collection.kind !== "local" || collection.available;
+  const existingApps = applications.flatMap((application) => {
+    const appOrigins = [
+      ...application.grants.flatMap((grant) => [grant.application_origin, grant.homepage]),
+      ...application.installations.map((entry) => entry.application_origin)
+    ].filter((value): value is string => Boolean(value));
+    return appOrigins.length > 0
+      ? appOrigins.map((origin) => ({ name: application.applicationName, origin }))
+      : [{ name: application.applicationName }];
+  });
+  const discovery = origins && usable ? collectionDiscoveryApps(origins, collection.id, existingApps) : null;
+  return <Page reading title={collection.name} status={<span className="connect-status">{collection.glyph !== "idle" && <StatusGlyph state={collection.glyph} />}{place}</span>} action={editorOrigin && usable && <a className="mdbase-button is-primary" aria-label={t(i18n)`Open in editor: ${collection.name}`} href={editorCollectionUrl(collection.id, editorOrigin)}><Trans>Open in editor</Trans></a>}>
     {collection.glyph !== "online" && collection.kind === "local" && <p className="connect-attention"><StatusGlyph state={collection.glyph} /><span>{connectionDescription(collection)}</span></p>}
+    {collection.kind === "native" && collection.source.sync === "cloud_copy" && collection.source.access.relationship === "owner" && <p><Trans>To delete this collection, open the collection list in the editor. Open the menu next to the collection name and choose “Delete collection…”.</Trans></p>}
     <section>
       <SectionTitle title={t(i18n)({ message: "Apps with access to the entire collection", context: "Connect interface" })} />
       {applications.map((application) => <div className="connect-row connect-application-row" key={application.applicationId}><div><strong>{application.applicationName}</strong><small>{host(application.grants[0]?.homepage ?? application.installations[0].application_origin)}</small></div><span>{application.installations.length ? t(i18n)({ message: "Access as your account", context: "Connect interface" }) : permissionSummary(application.grants)}</span><a className="mdbase-button is-tertiary" href={`/access?collection=${encodeURIComponent(collection.id)}`}><Trans>Review access</Trans></a></div>)}
       {applications.length === 0 && <Empty title={t(i18n)({ message: "No apps with access" })} body={t(i18n)({ message: "Apps appear after you approve access to this collection." })} />}
     </section>
+    {discovery && (discovery.apps.length > 0 || discovery.showMcp) && <section className="connect-collection-apps" aria-labelledby="collection-open-in">
+      <SectionTitle id="collection-open-in" title={t(i18n)({ message: "Open this collection in", context: "Connect interface" })} />
+      {discovery.apps.length > 0 && <ul className="app-grid">
+        {discovery.apps.map((app) => <AppTile key={app.key} app={app}>
+          {app.url && <a className="mdbase-button" href={app.url} target="_blank" rel="noopener noreferrer" aria-label={t(i18n)`Open ${app.name}`}><Trans>Open</Trans></a>}
+        </AppTile>)}
+      </ul>}
+      {discovery.showMcp && <McpConnectRow />}
+    </section>}
   </Page>;
 }
 
@@ -677,7 +699,15 @@ function Collections({ error, data, busy, perform, navigate, editorOrigin }: {
     }
     const created = await perform("create-collection", async options => {
       try {await management.createCollection(original, options);}
-      catch (error) {setCreationError(errorMessage(error)); throw error;}
+      catch (error) {
+        setCreationError(errorMessage(error));
+        if (isCollectionQuotaRefusal(error)) {
+          setLocation("quota");
+          finishCollectionCreation(original);
+          setIntent(null);
+        }
+        throw error;
+      }
     }, true, undefined, t(i18n)`Created ${original.displayName}`);
     if (created) {
       try {finishCollectionCreation(original);} catch {setCreationError(t(i18n)({ message: "Created, but this browser could not clear its request. Retrying will use the same collection." })); return;}
@@ -697,6 +727,7 @@ function Collections({ error, data, busy, perform, navigate, editorOrigin }: {
     </section>
     <Dialog open={creating} title={t(i18n)({ message: "Add collection", context: "Connect interface" })} closeDisabled={busy.has("create-collection")} onClose={() => setCreating(false)}>
       {!location && choices}
+      {location === "quota" && <p role="alert">{creationError}</p>}
       {cloud && <form className="connect-edit-form" noValidate onSubmit={event => void create(event)}>
         <p className="connect-muted"><Trans>Starts with a cloud copy</Trans></p>
         <label><span><Trans>Collection name</Trans></span><input className="mdbase-field" autoFocus maxLength={200} value={name} disabled={intent !== null || busy.has("create-collection")} aria-invalid={Boolean(creationError)} aria-describedby="collection-create-error" onBlur={validateName} onChange={event => setName(event.target.value)} /></label>

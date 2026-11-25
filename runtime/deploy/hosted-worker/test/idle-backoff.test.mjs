@@ -27,6 +27,20 @@ test("the Worker entry adds no export", () => {
   assert.deepEqual(Object.keys(worker).sort(), ["HostedCollection", "default", "idlePollMs"]);
 });
 
+test("a warm idle alarm at maximum backoff only rearms its deadline", async (ctx) => {
+  const t = object(false, new Map([["service-idle-streak", 7]]));
+  const storage = t.o.ctx.storage;
+  const put = ctx.mock.method(storage, "put");
+  const del = ctx.mock.method(storage, "delete");
+  const arm = ctx.mock.method(storage, "setAlarm");
+  const e = engine([]);
+  Object.assign(e, { tick() {}, refresh() { e.arm(["subscribe"]); }, serving: () => true });
+  t.o.log = logReplying();
+  t.o.engine = e;
+  await t.o.alarm();
+  assert.deepEqual([put.mock.callCount(), del.mock.callCount(), arm.mock.callCount()], [0, 0, 1]);
+});
+
 
 function object(escrow = false, data = new Map()) {
   let alarm = null;
@@ -50,7 +64,7 @@ const frame = (method) => encode(new Map([[2, method], [3, new Map()]]));
 /** A bound engine that queues `methods` once per sync (refresh() re-arms it). */
 function engine(methods = [], outputs = []) {
   let queued = [], applied = 0, sent = [];
-  const e = { appliedHead: () => String(applied), logBound: true, nextWakeup: () => null, installStatus: () => null, snapshotDeclined: () => false, attachmentObject: () => null, signRpc: () => new Uint8Array(64),
+  const e = { cacheRecovery: () => null, appliedHead: () => String(applied), logBound: true, nextWakeup: () => null, installStatus: () => null, snapshotDeclined: () => false, attachmentObject: () => null, signRpc: () => new Uint8Array(64),
     logCalls: () => { const q = queued; queued = []; return q; }, logBind: () => true,
     logReply(id) { if (sent[id] === "read") applied++; }, logFailed() {}, poll: () => { const out = outputs; outputs = []; return out; },
     arm(next = methods) { sent = next; queued = next.map((m, id) => ({ id, frame: frame(m) })); } };
@@ -361,10 +375,12 @@ test("LAB: answered calls that move nothing do not reset; progress, output, fail
 test("LAB: an idle replica that is not serving waits for the poll, not its stall probe", async (ctx) => {
   mock.method(console, "info", () => {});
   const at = 1_000_000_000_000;
-  const stalled = (serving) => { const e = engine(["read"]); e.logReply = () => {}; e.serving = () => serving; e.nextWakeup = () => at + S; return e; };
+  const stalled = (serving) => { const e = engine(["read"]); e.logReply = () => {}; e.serving = () => serving; e.nextWakeup = omitStallProbe => omitStallProbe ? null : at + S; return e; };
   const t = labObject(true);
   assert.equal(await syncAt(t, at, stalled(false)) / S, 120, "LAB: stalled, idle");
   const serving = labObject(true);
+  const repair = stalled(false); repair.nextWakeup = () => at + S;
+  assert.equal(await syncAt(labObject(true), at, repair) / S, 1, "LAB: unchanged head, repair continuation");
   assert.equal(await syncAt(serving, at, stalled(true)) / S, 1, "LAB: a serving engine's wakeup still wins");
   const prod = object(true); prod.o.log = logReplying();
   assert.equal(await syncAt(prod, at, stalled(false)) / S, 1, "outside LAB the stall probe is unchanged");

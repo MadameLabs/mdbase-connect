@@ -539,6 +539,11 @@ msgstr "Añade una colección para empezar."
 msgid "Add a new {0} type"
 msgstr "Añadir un tipo {0} nuevo"
 
+#. placeholder {0}: literal(request.application_name)
+#: src/authorization-view.tsx
+msgid "Add and sync your folder in mdbase Desktop, then return to this page. If this request expires while you set up Desktop, connect again from {0}."
+msgstr "Agrega y sincroniza tu carpeta en mdbase Desktop y luego vuelve a esta página. Si esta solicitud caduca mientras configuras Desktop, vuelve a conectar desde {0}."
+
 #: src/ConnectApp.tsx
 #: src/HomePage.tsx
 #: src/portal-commands.ts
@@ -664,6 +669,10 @@ msgstr "¿Ya tienes una cuenta? <0>Inicia sesión</0>"
 #: src/authority-workflows.tsx
 msgid "Already-allowed access stays in place. Revoke access separately if you no longer want it."
 msgstr "El acceso ya autorizado se mantiene. Revócalo por separado si ya no lo quieres."
+
+#: src/authorization-view.tsx
+msgid "Also works with {collectionName}"
+msgstr "También funciona con {collectionName}"
 
 #: src/AccountManagement.tsx
 msgid "Always on"
@@ -1165,6 +1174,11 @@ msgstr "Ponte en contacto con quien administra esta instalación de mdbase Conne
 msgid "Continue"
 msgstr "Continuar"
 
+#. placeholder {0}: pairing.connector_name
+#: src/authority-workflows.tsx
+msgid "Continue in {0} to finish. This page opens again when it's ready."
+msgstr "Continúa en {0} para terminar. Esta página se abrirá de nuevo cuando esté lista."
+
 #: src/authorization-view.tsx
 msgid "Continue in {applicationName} to use this collection."
 msgstr "Continúa en {applicationName} para usar esta colección."
@@ -1237,6 +1251,10 @@ msgstr "Crear"
 #: src/authorization-view.tsx
 msgid "Create a collection"
 msgstr "Crear una colección"
+
+#: src/authorization-view.tsx
+msgid "Create a new collection below, or sync an existing folder in mdbase Desktop first."
+msgstr "Crea una nueva colección abajo o sincroniza primero una carpeta existente en mdbase Desktop."
 
 #: src/authorization-review.tsx
 msgid "Create a new collection…"
@@ -1508,6 +1526,10 @@ msgctxt "Connect interface"
 msgid "Downloads only"
 msgstr "Solo descargas"
 
+#: src/authorization-view.tsx
+msgid "Each app asks for your approval before accessing {collectionName}. Your files remain ordinary Markdown."
+msgstr "Cada aplicación solicita tu aprobación antes de acceder a {collectionName}. Tus archivos siguen siendo Markdown normal."
+
 #: src/authorization-capabilities.ts
 msgctxt "Application access approval"
 msgid "Edit records"
@@ -1712,6 +1734,10 @@ msgstr "Generar código"
 msgctxt "Account management"
 msgid "Generating…"
 msgstr "Generando…"
+
+#: src/authorization-view.tsx
+msgid "Get mdbase Desktop"
+msgstr "Obtener mdbase Desktop"
 
 #: src/portal-model.ts
 msgid "GitHub account @{login}"
@@ -1948,10 +1974,6 @@ msgstr "Cargando personas…"
 #: src/authorization-view.tsx
 msgid "Loading the request…"
 msgstr "Cargando la solicitud…"
-
-#: src/AccountManagement.tsx
-msgid "Local collection and mirror files remain on your computers."
-msgstr "Los archivos de colecciones y réplicas locales permanecen en tus ordenadores."
 
 #: src/AccountManagement.tsx
 msgid "Local collection files stay on your computers and are not measured here."
@@ -2294,6 +2316,8 @@ msgstr "Solo {0}. Las carpetas ocultas siempre se excluyen."
 msgid "Only this type definition changes. Existing records stay in place. Setup is validated before access becomes active."
 msgstr "Solo cambia esta definición de tipo. Los registros existentes permanecen. La configuración se valida antes de que se active el acceso."
 
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open"
 msgstr "Abrir"
@@ -2301,6 +2325,8 @@ msgstr "Abrir"
 #. placeholder {0}: app.name
 #. placeholder {0}: pairing.connector_name
 #: src/authority-workflows.tsx
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open {0}"
 msgstr "Abrir {0}"
@@ -2376,6 +2402,11 @@ msgstr "Abre otra vez el enlace del correo o cambia las preferencias de correo e
 #: src/ConnectApp.tsx
 msgid "Open the mdbase Connect desktop app and choose Connect this computer."
 msgstr "Abre la aplicación de escritorio mdbase Connect y elige Conectar este ordenador."
+
+#: src/ConnectApp.tsx
+msgctxt "Connect interface"
+msgid "Open this collection in"
+msgstr "Abrir esta colección en"
 
 #: src/auth-view.tsx
 msgid "Open this through Tailscale"
@@ -2645,6 +2676,15 @@ msgctxt "Connect interface"
 msgid "Remove access"
 msgstr "Retirar acceso"
 
+#: src/ApplicationAccess.tsx
+msgid "Remove installation"
+msgstr "Quitar instalación"
+
+#. placeholder {0}: group.applicationName
+#: src/ApplicationAccess.tsx
+msgid "Remove only this installation of {0} from your account?"
+msgstr "¿Quitar solo esta instalación de {0} de tu cuenta?"
+
 #. placeholder {0}: member.name
 #. placeholder {1}: collection.display_name ?? collection.id
 #: src/ConnectApp.tsx
@@ -2659,6 +2699,7 @@ msgstr "Eliminando acceso…"
 msgid "Removing app and folder access…"
 msgstr "Retirando el acceso de aplicaciones y carpetas…"
 
+#: src/ApplicationAccess.tsx
 #: src/ConnectApp.tsx
 msgctxt "Connect interface"
 msgid "Removing…"
@@ -3182,6 +3223,7 @@ msgctxt "Account management"
 msgid "Signing out…"
 msgstr "Cerrando sesión…"
 
+#: src/AccountManagement.tsx
 #: src/api.ts
 #: src/ConnectPrimitives.tsx
 #: src/portal-model.ts
@@ -3515,6 +3557,10 @@ msgid "Those browsers will need to sign in again. This browser stays signed in."
 msgstr "Esos navegadores deberán iniciar sesión de nuevo. Este navegador seguirá conectado."
 
 #: src/ConnectApp.tsx
+msgid "To delete this collection, open the collection list in the editor. Open the menu next to the collection name and choose “Delete collection…”."
+msgstr "Para eliminar esta colección, abre la lista de colecciones en el editor. Abre el menú junto al nombre de la colección y elige «Eliminar colección…»."
+
+#: src/ConnectApp.tsx
 msgid "Try a different computer name. Filtering does not revoke access."
 msgstr "Prueba otro nombre de ordenador. El filtrado no revoca el acceso."
 
@@ -3649,6 +3695,10 @@ msgstr "Usar una carpeta local"
 #: src/ConnectApp.tsx
 msgid "Use a single-line collection name."
 msgstr "Utiliza un nombre de colección de una sola línea."
+
+#: src/authorization-view.tsx
+msgid "Use an existing folder or Obsidian vault"
+msgstr "Usar una carpeta existente o bóveda de Obsidian"
 
 #: src/ConnectApp.tsx
 msgid "Use an existing person or create a note"

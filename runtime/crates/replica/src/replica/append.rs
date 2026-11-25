@@ -176,7 +176,7 @@ pub(crate) enum Inflight {
 impl<S: Store> Replica<S> {
     /// Drive the loop: read if behind, otherwise plan and send a batch.
     pub(crate) fn pump(&mut self) {
-        if self.apply_fault || self.install.is_some() || self.hosted_blocked() {
+        if self.apply_fault.is_some() || self.install.is_some() || self.hosted_blocked() {
             return;
         }
         self.retire_completed_setups();
@@ -237,7 +237,8 @@ impl<S: Store> Replica<S> {
     }
 
     pub(crate) fn request_read(&mut self) {
-        if self.apply_fault
+        if self.apply_fault.is_some()
+            || self.hosted_reindex_pending()
             || self.reading
             || self.unindexed_sources.pending()
             || self.reverse_text_sources.pending()
@@ -255,12 +256,17 @@ impl<S: Store> Replica<S> {
         } else {
             self.stall_read.clear();
         }
+        let limit = self.hosted.as_ref().map_or(1000, |hosted| {
+            super::hosted::HOSTED_APPLY_ITEMS - hosted.applied_since_tick
+        });
+        if limit == 0 {
+            return;
+        }
         self.reading = true;
         let id = self.queue(LogRequest::Read(ReadParams {
             collection: self.cfg.collection,
             after: self.head.seq,
-            // Hosted: at most 500 entries applied per read (DO request budget).
-            limit: if self.is_hosted() { 500 } else { 1000 },
+            limit: u64::from(limit),
             kinds: None,
             max_bytes: self.read_bytes(),
         }));
@@ -445,7 +451,7 @@ impl<S: Store> Replica<S> {
             };
             let mut mutation = row.mutation.clone();
             for fill in &planned.base_text_fills {
-                if let Some(RtOp::Legacy(Op::Update(u))) =
+                if let Some(RtOp::Legacy(Op::Update(u) | Op::UpdateLive(u))) =
                     mutation.ops.get_mut(fill.op_index as usize)
                 {
                     u.body_base_text = Some(Text::Inline(fill.text.clone()));
@@ -1537,7 +1543,7 @@ impl<S: Store> Replica<S> {
                     return;
                 }
                 self.apply_items(r.items);
-                if self.apply_fault {
+                if self.apply_fault.is_some() {
                     return;
                 }
                 if self.rolling_back() {
@@ -1604,13 +1610,30 @@ impl<S: Store> Replica<S> {
 
     /// Run timers: retries and backoff.
     pub fn tick(&mut self) {
+        if let Some(hosted) = self.hosted.as_mut() {
+            hosted.applied_since_tick = 0;
+        }
+        if self.apply_fault.is_none()
+            && self.hosted_reindex_pending()
+            && self.hosted_reindex_step().is_err()
+        {
+            self.terminal_store_fault("hosted_record_reindex_failed");
+        }
+        self.tick_timers();
+    }
+
+    /// Run timers without granting another repair/replay slice after cold open.
+    pub fn tick_timers(&mut self) {
+        if self.hosted_reindex_pending() {
+            return;
+        }
         if let Some(session) = self.attachment_read_tick(self.now()) {
             self.attachment_read_end_idle(session);
         }
         self.prune_hosted_uploads();
         // An unlock's control read-ahead retries after transport trouble.
         self.account_key_ahead_step();
-        if self.apply_fault {
+        if self.apply_fault.is_some() {
             self.flush_status();
             return;
         }
@@ -1650,6 +1673,11 @@ impl<S: Store> Replica<S> {
 
     /// When the replica next wants [`Replica::tick`] (host clock, ms), if ever.
     pub fn next_wakeup(&self) -> Option<i64> {
+        self.next_wakeup_with_stall_probe(true)
+    }
+
+    /// LAB idle polling can replace the stall probe, but no other deadline.
+    pub fn next_wakeup_with_stall_probe(&self, include_stall_probe: bool) -> Option<i64> {
         let append = match &self.append {
             AppendState::RetryAt(t, _) if *t != i64::MAX => Some(*t),
             AppendState::WaitUntil(t) => Some(*t),
@@ -1659,9 +1687,10 @@ impl<S: Store> Replica<S> {
         let grant = self.key_grant_turn().filter(|t| *t > self.now());
         let stall_probe = match self.stalled {
             Some((_, position))
-                if !self.reading
+                if include_stall_probe
+                    && !self.reading
                     && !self.local_only()
-                    && !self.apply_fault
+                    && self.apply_fault.is_none()
                     && self.install.is_none()
                     && !self.hosted_blocked()
                     && self.log_move == LogMove::None
@@ -1683,6 +1712,13 @@ impl<S: Store> Replica<S> {
         let native_blob = self.unindexed_blob_fetches.next_wakeup();
         [
             append,
+            (self.apply_fault.is_none()
+                && self.hosted.as_ref().is_some_and(|hosted| {
+                    hosted.reindex_stamp.is_some()
+                        || (hosted.applied_since_tick == super::hosted::HOSTED_APPLY_ITEMS
+                            && self.head.seq < self.head_known)
+                }))
+            .then(|| self.now().saturating_add(1000)),
             grant,
             stall_probe,
             upload,
@@ -1720,6 +1756,13 @@ impl<S: Store> Replica<S> {
         let status = self.sync_status();
         for s in subs {
             let mut st = status.clone();
+            if self
+                .sessions
+                .get(&s)
+                .is_some_and(|session| self.scope_web_status(&session.auth, &mut st).is_err())
+            {
+                continue;
+            }
             st.grant = self
                 .session(s)
                 .and_then(|session| self.session_grant(&session.auth))
@@ -1742,7 +1785,7 @@ impl<S: Store> Replica<S> {
         provenance: Option<super::log_session::MatchedLogReply>,
     ) {
         self.forget_log_reply_scope(id);
-        if self.apply_fault {
+        if self.apply_fault.is_some() {
             return;
         }
         let Some(kind) = self.inflight.remove(&id) else {
@@ -1877,7 +1920,7 @@ impl<S: Store> Replica<S> {
         if matches!(&push, LogPush::Disconnected) {
             self.attachment_read_retire_transport();
         }
-        if self.apply_fault {
+        if self.apply_fault.is_some() {
             return;
         }
         match push {

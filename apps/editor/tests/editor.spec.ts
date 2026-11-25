@@ -735,16 +735,20 @@ test("opens notes in tabs from links, the list and quick open, and reopens them"
 
 test("splits the editor into two panes with their own notes, focus and tabs", async ({ page }) => {
   await page.goto("?demo=12");
-  const focused = page.getByRole("main", { name: "Note editor" });
-  const other = page.getByRole("region", { name: "Note editor" });
+  // The pane with the focus, and the one beside it.
+  const focused = page.locator(".editor-pane[data-focused]");
+  const other = page.locator(".editor-pane:not([data-focused])");
   const body = focused.getByRole("textbox", { name: "Note body" });
   await replaceOpeningNoteBody(body, "[[Journal/garden-notes-2|Garden notes 2]]\n\nKeep writing.");
 
   await page.locator(".body-editor .cm-lp-link").filter({ hasText: "Garden notes 2" }).click({ modifiers: ["ControlOrMeta", "Alt"] });
   await expect(focused.getByRole("textbox", { name: "Note title" })).toHaveValue("Garden notes 2");
   await expect(other.getByRole("textbox", { name: "Note title" })).toHaveValue("The shape of useful tools");
-  const left = await other.boundingBox(), right = await focused.boundingBox();
-  expect(right!.x).toBeGreaterThan(left!.x + left!.width - 2);
+  // The panes move into place; once settled the new one is to the right of the first.
+  await expect.poll(async () => {
+    const left = await other.boundingBox(), right = await focused.boundingBox();
+    return right!.x - (left!.x + left!.width);
+  }).toBeGreaterThan(-2);
 
   await other.getByRole("textbox", { name: "Note body" }).click();
   await expect(focused.getByRole("textbox", { name: "Note title" })).toHaveValue("The shape of useful tools");
@@ -752,8 +756,9 @@ test("splits the editor into two panes with their own notes, focus and tabs", as
   await page.keyboard.type(" Left pane.");
   await expect(focused).toHaveAttribute("data-save-state", "saved", { timeout: 2_000 });
   await page.getByRole("option").filter({ hasText: "A quiet interface 3" }).click({ button: "middle" });
-  await expect(focused.getByRole("tablist", { name: "Open tabs" }).getByRole("tab")).toHaveText(["The shape of useful tools", "A quiet interface 3"]);
-  await expect(other.getByRole("tab")).toHaveText(["Garden notes 2"]);
+  // Each pane's tabs sit above it; the focused pane's are marked.
+  await expect(page.locator(".mp-stack[data-mp-focused]").getByRole("tablist", { name: "Open tabs" }).getByRole("tab")).toHaveText(["The shape of useful tools", "A quiet interface 3"]);
+  await expect(page.locator(".mp-stack:not([data-mp-focused])").getByRole("tab")).toHaveText(["Garden notes 2"]);
 
   await page.keyboard.press("Alt+O");
   await expect(focused.getByRole("textbox", { name: "Note title" })).toHaveValue("Garden notes 2");
@@ -768,6 +773,54 @@ test("splits the editor into two panes with their own notes, focus and tabs", as
   await expect(other).toHaveCount(0);
   await expect(focused.getByRole("textbox", { name: "Note title" })).toHaveValue("A quiet interface 3");
   await expect(page.getByRole("tab")).toHaveText(["The shape of useful tools", "A quiet interface 3"]);
+});
+
+test("moves a tab to the other pane by dragging it and resizes the panes at the divider", async ({ page }) => {
+  await page.goto("?demo=12");
+  await page.getByRole("textbox", { name: "Note body" }).waitFor();
+  await page.getByRole("option").filter({ hasText: "Garden notes 2" }).click({ button: "middle" });
+  await page.keyboard.press("Control+k");
+  await page.getByRole("dialog", { name: "Quick open" }).getByRole("combobox").fill(">Split right");
+  await page.keyboard.press("Enter");
+  const panes = page.locator(".mp-stack");
+  await expect(panes).toHaveCount(2);
+  await expect(panes.first().getByRole("tab")).toHaveText(["The shape of useful tools", "Garden notes 2"]);
+  const moved = panes.nth(1).getByRole("tab");
+  await expect(moved).toHaveCount(1);
+  const name = (await moved.textContent())!;
+  // The panes move into place before the tab is where it will be picked up.
+  await expect.poll(async () => {
+    const left = await panes.first().boundingBox(), right = await panes.nth(1).boundingBox();
+    return right!.x - (left!.x + left!.width);
+  }).toBeGreaterThan(-2);
+
+  // Dropping the second pane's only tab among the first pane's tabs leaves one pane.
+  const from = (await moved.boundingBox())!, to = (await panes.first().getByRole("tablist").boundingBox())!;
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width - 20, to.y + to.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect(panes).toHaveCount(1);
+  await expect(page.getByRole("tab")).toHaveText(["The shape of useful tools", "Garden notes 2", name]);
+  await expect(page.getByRole("tab", { selected: true })).toHaveText(name);
+
+  // The arrow keys on the divider between two panes move it.
+  await page.keyboard.press("Control+k");
+  await page.getByRole("dialog", { name: "Quick open" }).getByRole("combobox").fill(">Split right");
+  await page.keyboard.press("Enter");
+  const divider = page.getByRole("separator", { name: "Resize panes" });
+  await expect(divider).toHaveCount(1);
+  const before = Number(await divider.getAttribute("aria-valuenow"));
+  const width = async () => (await panes.first().boundingBox())!.width;
+  await expect.poll(width).toBeGreaterThan(100);
+  const widthBefore = await width();
+  await divider.focus();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(async () => Number(await divider.getAttribute("aria-valuenow"))).toBeLessThan(before);
+  await expect.poll(width).toBeLessThan(widthBefore);
+  await page.reload();
+  await expect.poll(async () => Number(await page.getByRole("separator", { name: "Resize panes" }).getAttribute("aria-valuenow"))).toBeLessThan(before);
 });
 
 test("previews internal editor links on hover, but not sidebar rows", async ({ page }) => {
@@ -1307,6 +1360,132 @@ test("edits complete type membership, choices, and multiple required fields", as
   await expect(source).toContainText("These are the titles for the notes.");
 });
 
+test("links a property to typed notes, makes one while linking, and groups backlinks by type", async ({ page }) => {
+  await page.goto("?demo=12");
+  await page.getByRole("button", { name: "Types (1)" }).click();
+  // `tags` becomes a list of links to notes of the `note` type.
+  await chooseOption(page.getByRole("combobox", { name: "tags field type" }), "link");
+  await page.getByRole("combobox", { name: "Add a type tags links to" }).click();
+  await page.getByRole("option", { name: "Note", exact: true }).click();
+  await page.getByRole("button", { name: "Review changes" }).click();
+  await page.getByRole("button", { name: "Confirm update" }).click();
+  await expect(page.getByRole("button", { name: "Review changes" })).toBeDisabled();
+
+  await page.getByRole("button", { name: /^All notes/ }).click();
+  await page.locator(".note-row").filter({ hasText: "Ideas for Sunday 12" }).click();
+  await page.getByRole("button", { name: "Note properties" }).click();
+  const tags = page.getByRole("group", { name: "tags", exact: true });
+  // What was written before the field held links stays, named as it was typed.
+  await expect(tags).toContainText("ideas");
+  await tags.getByRole("button", { name: "Add a link to tags" }).click();
+  await tags.getByRole("combobox").fill("Compilers");
+  await page.getByRole("option", { name: "New note “Compilers”" }).click();
+  // The link is written at once and names the note the collection then confirms.
+  await expect(tags.getByRole("button", { name: "Compilers", exact: true })).toBeVisible();
+
+  await tags.getByRole("button", { name: "Compilers", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Note title" })).toHaveValue("Compilers");
+  const backlinks = page.getByRole("region", { name: "Linked from" });
+  const notes = backlinks.getByRole("group", { name: "Note", exact: true });
+  await expect(notes.getByRole("button", { name: /Ideas for Sunday 12/ })).toContainText("tags");
+});
+
+test("fills in what a new note requires while linking to it", async ({ page }) => {
+  await page.goto("?demo=12");
+  await page.getByRole("button", { name: "Types (1)" }).click();
+  await page.getByRole("button", { name: "Add field", exact: true }).click();
+  const fieldName = page.locator(".visual-field-name input").last();
+  await fieldName.fill("source");
+  await fieldName.press("Tab");
+  const row = page.locator(".visual-field-row").filter({ has: page.locator('.visual-field-name input[value="source"]') });
+  await row.getByRole("checkbox", { name: "Required" }).check();
+  await page.getByRole("button", { name: "Review changes" }).click();
+  await page.getByRole("button", { name: "Confirm update" }).click();
+  await expect(page.getByRole("button", { name: "Review changes" })).toBeDisabled();
+
+  await page.getByRole("button", { name: /^All notes/ }).click();
+  await page.locator(".note-row").filter({ hasText: "Ideas for Sunday 12" }).click();
+  const body = page.getByRole("textbox", { name: "Note body" });
+  await body.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("\n\n[[Zed");
+  await page.getByRole("option", { name: "New note “Zed”" }).click();
+
+  // A name is not enough for this type: a short form asks for the rest, beside the link.
+  const form = page.getByRole("dialog", { name: "New note" });
+  await expect(form.getByRole("textbox", { name: "Title" })).toHaveValue("Zed");
+  await expect(form.getByRole("textbox", { name: "source value" })).toBeFocused();
+  await expect(form.getByRole("button", { name: "Create and link" })).toBeDisabled();
+  // Leaving the form keeps what was typed and makes nothing.
+  await page.keyboard.press("Escape");
+  await expect(form).toBeHidden();
+  await expect(body).toBeFocused();
+  await expect(body).toContainText("[[Zed");
+
+  await page.keyboard.press("Control+Space");
+  await page.getByRole("option", { name: "New note “Zed”" }).click();
+  await form.getByRole("textbox", { name: "source value" }).fill("A walk");
+  await page.keyboard.press("Enter");
+  await expect(form).toBeHidden();
+  await expect(body).toContainText("[[Notes/Zed]]");
+  await expect(body).toBeFocused();
+  await expect(page.getByRole("option", { name: /^Zed / })).toBeVisible();
+});
+
+test("fills in a required field when creating a linked record from the modal properties overlay", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await page.goto("?demo=12");
+  await page.getByRole("button", { name: "Show collections sidebar" }).first().click();
+  await page.getByRole("button", { name: "Types (1)" }).click();
+  // `tags` links to `note`, and `note` requires `source`.
+  await chooseOption(page.getByRole("combobox", { name: "tags field type" }), "link");
+  await page.getByRole("combobox", { name: "Add a type tags links to" }).click();
+  await page.getByRole("option", { name: "Note", exact: true }).click();
+  await page.getByRole("button", { name: "Add field", exact: true }).click();
+  const fieldName = page.locator(".visual-field-name input").last();
+  await fieldName.fill("source");
+  await fieldName.press("Tab");
+  const row = page.locator(".visual-field-row").filter({ has: page.locator('.visual-field-name input[value="source"]') });
+  await row.getByRole("checkbox", { name: "Required" }).check();
+  await page.getByRole("button", { name: "Review changes" }).click();
+  await page.getByRole("button", { name: "Confirm update" }).click();
+  await expect(page.getByRole("button", { name: "Review changes" })).toBeDisabled();
+
+  await page.getByRole("button", { name: /^All notes/ }).click();
+  await page.locator(".note-row").filter({ hasText: "Ideas for Sunday 12" }).click();
+  await page.getByRole("button", { name: "Note properties" }).click();
+
+  const inspector = page.getByRole("dialog", { name: "Note properties" });
+  await expect(inspector).toBeVisible();
+  const tags = inspector.getByRole("group", { name: "tags", exact: true });
+  await tags.getByRole("button", { name: "Add a link to tags" }).click();
+  await tags.getByRole("combobox").fill("Octavia");
+  await page.getByRole("option", { name: "New note “Octavia”" }).click();
+
+  // At 1000px the properties panel is a modal <dialog>: the form must not be inert under it.
+  const form = page.getByRole("dialog", { name: "New note" });
+  await expect(form).toBeVisible();
+  const source = form.getByRole("textbox", { name: "source value" });
+  await expect(source).toBeFocused();
+  // Escape closes only the quick-create form, leaving the properties overlay open.
+  await page.keyboard.press("Escape");
+  await expect(form).toBeHidden();
+  await expect(inspector).toBeVisible();
+
+  await tags.getByRole("button", { name: "Add a link to tags" }).click();
+  await tags.getByRole("combobox").fill("Octavia");
+  await page.getByRole("option", { name: "New note “Octavia”" }).click();
+  await expect(form).toBeVisible();
+  await source.click();
+  await expect(form).toBeVisible();
+  await source.fill("A walk");
+  await form.getByRole("button", { name: "Create and link" }).click();
+
+  await expect(form).toBeHidden();
+  await expect(inspector).toBeVisible();
+  await expect(tags.getByRole("button", { name: "Octavia", exact: true })).toBeVisible();
+});
+
 test("edits and reviews portable collection behaviour", async ({ page }) => {
   await page.setViewportSize({ width: 1000, height: 700 });
   await page.goto("?demo=12");
@@ -1336,13 +1515,15 @@ test("edits and reviews portable collection behaviour", async ({ page }) => {
   await chooseOption(page.getByRole("combobox", { name: "Default field 1" }), "title");
   await page.getByRole("textbox", { name: "Default value for title" }).fill("Untitled note");
 
-  await page.getByRole("button", { name: "Add link rule" }).click();
-  await chooseOption(page.getByRole("combobox", { name: "Link field 1" }), "tags[]");
+  // A link is a kind of field: `tags` becomes a list of links to notes.
+  await chooseOption(page.getByRole("combobox", { name: "tags field type" }), "link");
+  await page.getByRole("checkbox", { name: "Allow several links" }).check();
   await chooseOption(page.getByRole("combobox", { name: "tags[] link format" }), "wikilink");
   await page.getByRole("checkbox", { name: "Require an existing target" }).check();
-  await page.getByRole("button", { name: "Add target type" }).click();
-  await page.getByRole("combobox", { name: "tags[] target type 1", exact: true }).fill("note");
-  await page.getByRole("combobox", { name: "tags[] target type 1", exact: true }).press("Tab");
+  // Adding a target leaves the control ready for the next one, so it holds no value of its own.
+  await page.getByRole("combobox", { name: "Add a type tags links to" }).click();
+  await page.getByRole("option", { name: "Note", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Types tags links to" })).toContainText("Note");
 
   await page.getByRole("button", { name: "Add unique rule" }).click();
   await chooseOption(page.getByRole("combobox", { name: "Unique field 1" }), "title");

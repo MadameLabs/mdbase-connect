@@ -114,6 +114,9 @@ struct EffectStage {
 /// What staging the entry's metadata and receipt rows decides for the commit.
 struct MetaStage {
     catalog: std::sync::Arc<mdbn_core::types::Catalog>,
+    /// The record-meta stamp of the catalog the entry leaves, when it differs
+    /// from the stored one: records must be indexed again.
+    reindex_stamp: Option<Vec<u8>>,
     receipt_conflicts: Vec<mdbn_wire::entry::Conflict>,
     log_time: i64,
     ratchet: u64,
@@ -124,6 +127,7 @@ struct OwnResolution {
     own: bool,
     own_match: bool,
     relocated_from: Option<u64>,
+    local_web_owner: Option<Uuid>,
 }
 
 /// What the entry changes, for the caller's rebase keys and the after-commit work.
@@ -136,7 +140,7 @@ struct ChangeStage {
 impl<S: Store> Replica<S> {
     /// Apply items in log order, starting at the first one after the head.
     pub(crate) fn apply_items(&mut self, items: Vec<SeqItem>) {
-        if self.apply_fault {
+        if self.apply_fault.is_some() || self.hosted_reindex_pending() {
             return;
         }
         let mut changed: BTreeSet<String> = BTreeSet::new();
@@ -144,6 +148,12 @@ impl<S: Store> Replica<S> {
         for it in items {
             if it.seq <= self.head.seq {
                 continue;
+            }
+            if let Some(hosted) = self.hosted.as_mut() {
+                if hosted.applied_since_tick == super::hosted::HOSTED_APPLY_ITEMS {
+                    break;
+                }
+                hosted.applied_since_tick += 1;
             }
             if it.seq != self.head.seq + 1 {
                 // A gap: read what's missing.
@@ -178,6 +188,7 @@ impl<S: Store> Replica<S> {
                             checkpoint,
                             it.seq,
                             matches!(&e, StoreError::CommitAborted(_)),
+                            &e,
                         );
                     }
                     self.incident(
@@ -240,7 +251,7 @@ impl<S: Store> Replica<S> {
                     break;
                 }
             }
-            if self.apply_fault {
+            if self.apply_fault.is_some() || self.hosted_reindex_pending() {
                 break;
             }
         }
@@ -261,7 +272,7 @@ impl<S: Store> Replica<S> {
                 Some(Value::Text(format!("store: {e}"))),
             );
         }
-        if self.apply_fault || self.is_apply_recovering() {
+        if self.apply_fault.is_some() || self.is_apply_recovering() {
             self.apply_deferred_changed.extend(changed);
             self.status_dirty = true;
             return;
@@ -286,8 +297,9 @@ impl<S: Store> Replica<S> {
     }
 
     /// Open the deferred-durability window of the call's entries, if the store
-    /// has such a mode (the native index; every other store keeps each commit
-    /// durable and this does nothing).
+    /// has such a mode (the desktop's native index and the app's browser
+    /// index; every other store commits each entry on its own and this does
+    /// nothing).
     ///
     /// Inside it an applied entry is atomic and ordered but not yet durable, so
     /// a crash takes back a suffix of the call's entries. That is safe because
@@ -501,7 +513,7 @@ impl<S: Store> Replica<S> {
             self.commit_retained(head, tx, Verdict::Void)?;
         }
         self.note_genesis(head);
-        if own && !self.apply_fault {
+        if own && self.apply_fault.is_none() {
             if let Some(row) = pending {
                 changed.extend(row.touches);
             }
@@ -551,8 +563,8 @@ impl<S: Store> Replica<S> {
     }
 
     /// A genesis mismatch is terminal: nothing is served, sealed or appended.
-    pub(super) fn genesis_fault(&mut self) {
-        self.apply_fault = true;
+    pub(super) fn genesis_fault(&mut self, why: String) {
+        self.raise_fence(super::Fence::Genesis, why);
         self.calls.clear();
         self.inflight.clear();
         self.append = super::append::AppendState::Stopped;
@@ -648,7 +660,7 @@ impl<S: Store> Replica<S> {
             self.discard_staged_key_grants();
             return Err(e);
         }
-        if !self.apply_fault
+        if self.apply_fault.is_none()
             && !self.is_apply_recovering()
             && let Some(history) = next_history
         {
@@ -779,12 +791,13 @@ impl<S: Store> Replica<S> {
         // Read-ahead has no settled applied prefix. Its persisted policy/hints
         // cannot recreate an original observation, even after a typed abort.
         self.original_history.invalidate();
-        if self.apply_fault {
+        if self.apply_fault.is_some() {
             return Err("apply state is faulted; reopen required".into());
         }
         if let Err(why) = self.check_genesis(p, raw) {
-            self.genesis_fault();
-            return Err(format!("control {why}"));
+            let why = format!("control {why}");
+            self.genesis_fault(why.clone());
+            return Err(why);
         }
         let item = Item::from_bytes(raw).map_err(|e| format!("control item {p}: {e}"))?;
         if item.seq != Some(p) || item.collection != self.cfg.collection || !item.kind.is_control()
@@ -811,7 +824,12 @@ impl<S: Store> Replica<S> {
             meta,
             ..Tx::default()
         }) {
-            self.failed_apply(checkpoint, p, matches!(&e, StoreError::CommitAborted(_)));
+            self.failed_apply(
+                checkpoint,
+                p,
+                matches!(&e, StoreError::CommitAborted(_)),
+                &e,
+            );
             return Err(format!("store: {e}"));
         }
         self.note_genesis(at);
@@ -941,7 +959,7 @@ impl<S: Store> Replica<S> {
     ) -> Result<Outcome, StoreError> {
         // The host's genesis pin, on the raw bytes before anything is decoded.
         if let Err(why) = self.check_genesis(p, &bytes.0) {
-            self.genesis_fault();
+            self.genesis_fault(why.clone());
             return Ok(Outcome::Integrity(why));
         }
         // A prior successful commit's accounting read may have failed. Refresh
@@ -1661,7 +1679,7 @@ impl<S: Store> Replica<S> {
         tx: &mut Tx,
     ) -> Result<MetaStage, StoreError> {
         // Record metadata under the catalog after this entry's resource effects.
-        let catalog = if catalog_changed {
+        let (catalog, reindex_stamp) = if catalog_changed {
             let mut rs: std::collections::BTreeMap<String, String> =
                 self.store.resources()?.into_iter().collect();
             for p in &tx.resources_del {
@@ -1670,11 +1688,21 @@ impl<S: Store> Replica<S> {
             for (p, d) in &tx.resources_put {
                 rs.insert(p.clone(), d.clone());
             }
-            std::sync::Arc::new(mdbn_core::types::Catalog::load(
-                rs.iter().map(|(a, b)| (a.as_str(), b.as_str())),
-            ))
+            let resources: Vec<_> = rs.into_iter().collect();
+            let catalog = crate::plan::compile_catalog(&resources);
+            // A change that leaves every input of `record_meta` alone (a schema,
+            // a contract) leaves every record's metadata as it is.
+            let stamp = crate::plan::record_meta_stamp(&catalog);
+            let stamp = (self.store.meta(meta_keys::RECORD_META)?.as_ref() != Some(&stamp))
+                .then_some(stamp);
+            if stamp.is_some() && !self.is_hosted() {
+                // The device reindexes right after this commit. Until it stamps
+                // the new catalog, no stamp claims the rows it has not reached.
+                tx.meta.push((meta_keys::RECORD_META.into(), None));
+            }
+            (std::sync::Arc::new(catalog), stamp)
         } else {
-            self.catalog.clone()
+            (self.catalog.clone(), None)
         };
         for r in &mut tx.records_put {
             r.meta = record_meta(&catalog, &r.path, &r.doc);
@@ -1722,6 +1750,7 @@ impl<S: Store> Replica<S> {
             .push((meta_keys::LOG_STATE.into(), log_state(log_time, ratchet)));
         Ok(MetaStage {
             catalog,
+            reindex_stamp,
             receipt_conflicts,
             log_time,
             ratchet,
@@ -1748,6 +1777,10 @@ impl<S: Store> Replica<S> {
         // never confirmed with someone else's result. Every applied entry records
         // its log-derived receipt so a cold rebuild restores grant-scoped receipts.
         let hosted = self.is_hosted();
+        let local_web_owner = pending
+            .as_ref()
+            .filter(|_| self.local_only())
+            .and_then(super::local_web::pending_owner);
         let own_match = own
             && (!hosted || pending.as_ref().map(|r| r.grant) == Some(payload.mutation.on_behalf));
         let relocated_from = if own_match {
@@ -1779,13 +1812,16 @@ impl<S: Store> Replica<S> {
                 conflicts: receipt_conflicts.to_vec(),
                 problem: None,
                 resolved_at: self.now(),
-                grant: mediated_grant.or(payload.mutation.on_behalf),
+                grant: local_web_owner
+                    .or(mediated_grant)
+                    .or(payload.mutation.on_behalf),
             });
         }
         Ok(OwnResolution {
             own,
             own_match,
             relocated_from,
+            local_web_owner,
         })
     }
 
@@ -1873,6 +1909,7 @@ impl<S: Store> Replica<S> {
     ) -> Result<Outcome, StoreError> {
         let MetaStage {
             catalog,
+            reindex_stamp,
             receipt_conflicts,
             log_time,
             ratchet,
@@ -1881,6 +1918,7 @@ impl<S: Store> Replica<S> {
             own,
             own_match,
             relocated_from,
+            local_web_owner,
         } = resolution;
         let ChangeStage {
             legacy_effects,
@@ -1905,14 +1943,35 @@ impl<S: Store> Replica<S> {
                 StoreError::CommitAborted(reason) => StoreError::Io(reason),
                 other => other,
             })?;
+        let deferred_projection = query_context.is_some() && tx.query_index.is_none();
         if self.local_only() {
-            // Local confirmation has no synced log bytes or retention material.
-            self.store.commit(tx)?;
+            let temporary_blob = if let Some(owner) = local_web_owner {
+                self.stage_local_web_publish(owner, &payload.mutation.id, &mut tx)?
+            } else {
+                None
+            };
+            if let Some(owner) = local_web_owner {
+                if !self.local_web_live(owner) {
+                    return self.commit_local_void(head, payload, "local bearer is no longer live");
+                }
+                self.wait_published(payload.mutation.id, &legacy_effects);
+            }
+            let file_publish = !tx.publish.is_empty();
+            let report = self.store.commit(tx)?;
             self.head = head;
+            if file_publish && !report.drifts.is_empty() {
+                self.mark_local_web_unpublished(payload.mutation.id);
+            }
+            if let Some(digest) = temporary_blob {
+                self.store.commit(Tx {
+                    blobs_del: vec![digest],
+                    ..Tx::default()
+                })?;
+            }
         } else {
             self.commit_retained(head, tx, Verdict::Applied)?;
         }
-        if self.apply_fault {
+        if self.apply_fault.is_some() {
             // The head/receipt/own handover committed, but a defensive read
             // failed. No follow-up indexing/hold writes or queued output now.
             return Ok(Outcome::Applied);
@@ -1920,11 +1979,31 @@ impl<S: Store> Replica<S> {
         self.query_context = query_context;
         self.log_time = log_time;
         self.sem_ratchet_set(ratchet);
+        // The entry is committed: a later typed abort cannot certify that the
+        // apply changed nothing.
+        let committed = |error| match error {
+            StoreError::CommitAborted(reason) => StoreError::Io(reason),
+            other => other,
+        };
         if catalog_changed {
             self.catalog = catalog;
-            self.reindex()?;
+            if let Some(hosted) = self.hosted.as_mut() {
+                hosted.reindex_stamp = reindex_stamp;
+            } else {
+                // Records whose metadata the catalog changes are written back
+                // with the projection the index's new generation needs.
+                let rederive = reindex_stamp.map(|_| super::query_index::Reindex::Changed);
+                self.reindex(rederive).map_err(committed)?;
+            }
+            self.reset_feed();
             // Every pending row plans under the new catalog.
             changed.extend(self.pending_keys.values().flatten().cloned());
+        }
+        // A device whose rebuild met a value too long for an index key narrows
+        // the index here.
+        if deferred_projection || (catalog_changed && !self.is_hosted()) {
+            self.backfill_query_index_within_budget()
+                .map_err(committed)?;
         }
         if relocated_from.is_some() {
             self.resurrected.remove(&payload.mutation.id);
@@ -2617,55 +2696,6 @@ impl<S: Store> Replica<S> {
         *catalog_changed = true;
         tx.resources_put.push((r.path.clone(), doc.clone()));
         Ok(ControlFlow::Continue(()))
-    }
-
-    /// Recompute every record's index entries under the current catalog, then
-    /// stamp which catalog they were derived under. The pages and the stamp share
-    /// one deferred-durability window: the stamp is written last, so a crash
-    /// leaves it missing and the next open reindexes again.
-    pub(super) fn reindex(&mut self) -> Result<(), StoreError> {
-        self.with_deferred_durability(Self::reindex_pages)
-    }
-
-    fn reindex_pages(&mut self) -> Result<(), StoreError> {
-        let mut after = None;
-        loop {
-            let page = self
-                .store
-                .records(crate::store::Page { after, limit: 128 })?;
-            let Some(l) = page.last() else {
-                break;
-            };
-            after = Some(l.id);
-            let rows: Vec<RecordRow> = page
-                .into_iter()
-                .map(|mut r| {
-                    r.meta = record_meta(&self.catalog, &r.path, &r.doc);
-                    r
-                })
-                .collect();
-            self.stats.reindexed += rows.len() as u64;
-            for rows in super::query_index::byte_batches(rows) {
-                let mut tx = Tx {
-                    records_put: rows,
-                    ..Tx::default()
-                };
-                let context = self
-                    .prepare_query_index(&mut tx)
-                    .map_err(|error| match error {
-                        StoreError::CommitAborted(reason) => StoreError::Io(reason),
-                        other => other,
-                    })?;
-                self.store.commit(tx)?;
-                self.query_context = context;
-            }
-        }
-        let stamp = crate::plan::record_meta_stamp(&self.store.resources()?);
-        self.store.commit(Tx {
-            meta: vec![(crate::store::meta_keys::RECORD_META.into(), Some(stamp))],
-            ..Tx::default()
-        })?;
-        Ok(())
     }
 
     /// Count and report a re-planned entry whose recorded results differ.

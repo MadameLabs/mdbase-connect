@@ -539,6 +539,11 @@ msgstr "시작하려면 컬렉션을 추가하세요."
 msgid "Add a new {0} type"
 msgstr "새 {0} 유형 추가"
 
+#. placeholder {0}: literal(request.application_name)
+#: src/authorization-view.tsx
+msgid "Add and sync your folder in mdbase Desktop, then return to this page. If this request expires while you set up Desktop, connect again from {0}."
+msgstr "mdbase Desktop에서 폴더를 추가하고 동기화한 뒤 이 페이지로 돌아오세요. Desktop을 설정하는 동안 이 요청이 만료되면 {0}에서 다시 연결하세요."
+
 #: src/ConnectApp.tsx
 #: src/HomePage.tsx
 #: src/portal-commands.ts
@@ -664,6 +669,10 @@ msgstr "이미 계정이 있나요? <0>로그인</0>"
 #: src/authority-workflows.tsx
 msgid "Already-allowed access stays in place. Revoke access separately if you no longer want it."
 msgstr "이미 허용된 접근 권한은 유지됩니다. 더 이상 원하지 않으면 별도로 취소하세요."
+
+#: src/authorization-view.tsx
+msgid "Also works with {collectionName}"
+msgstr "{collectionName}에서도 사용 가능"
 
 #: src/AccountManagement.tsx
 msgid "Always on"
@@ -1165,6 +1174,11 @@ msgstr "이 mdbase Connect 배포의 운영자에게 문의하세요."
 msgid "Continue"
 msgstr "계속"
 
+#. placeholder {0}: pairing.connector_name
+#: src/authority-workflows.tsx
+msgid "Continue in {0} to finish. This page opens again when it's ready."
+msgstr "{0}에서 계속하여 완료하세요. 준비가 되면 이 페이지가 다시 열립니다."
+
 #: src/authorization-view.tsx
 msgid "Continue in {applicationName} to use this collection."
 msgstr "이 컬렉션을 사용하려면 {applicationName}에서 계속하세요."
@@ -1237,6 +1251,10 @@ msgstr "만들기"
 #: src/authorization-view.tsx
 msgid "Create a collection"
 msgstr "컬렉션 만들기"
+
+#: src/authorization-view.tsx
+msgid "Create a new collection below, or sync an existing folder in mdbase Desktop first."
+msgstr "아래에서 새 컬렉션을 만들거나 먼저 mdbase Desktop에서 기존 폴더를 동기화하세요."
 
 #: src/authorization-review.tsx
 msgid "Create a new collection…"
@@ -1508,6 +1526,10 @@ msgctxt "Connect interface"
 msgid "Downloads only"
 msgstr "다운로드 전용"
 
+#: src/authorization-view.tsx
+msgid "Each app asks for your approval before accessing {collectionName}. Your files remain ordinary Markdown."
+msgstr "각 앱은 {collectionName}에 접근하기 전에 승인을 요청합니다. 파일은 일반 Markdown으로 유지됩니다."
+
 #: src/authorization-capabilities.ts
 msgctxt "Application access approval"
 msgid "Edit records"
@@ -1712,6 +1734,10 @@ msgstr "코드 생성"
 msgctxt "Account management"
 msgid "Generating…"
 msgstr "생성하는 중…"
+
+#: src/authorization-view.tsx
+msgid "Get mdbase Desktop"
+msgstr "mdbase Desktop 받기"
 
 #: src/portal-model.ts
 msgid "GitHub account @{login}"
@@ -1948,10 +1974,6 @@ msgstr "사람 불러오는 중…"
 #: src/authorization-view.tsx
 msgid "Loading the request…"
 msgstr "요청 불러오는 중…"
-
-#: src/AccountManagement.tsx
-msgid "Local collection and mirror files remain on your computers."
-msgstr "로컬 컬렉션 및 미러 파일은 컴퓨터에 남습니다."
 
 #: src/AccountManagement.tsx
 msgid "Local collection files stay on your computers and are not measured here."
@@ -2294,6 +2316,8 @@ msgstr "{0}만. 숨겨진 폴더는 항상 제외됩니다."
 msgid "Only this type definition changes. Existing records stay in place. Setup is validated before access becomes active."
 msgstr "이 유형 정의만 변경됩니다. 기존 레코드는 그대로 유지됩니다. 액세스가 활성화되기 전에 설정을 검증합니다."
 
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open"
 msgstr "열기"
@@ -2301,6 +2325,8 @@ msgstr "열기"
 #. placeholder {0}: app.name
 #. placeholder {0}: pairing.connector_name
 #: src/authority-workflows.tsx
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open {0}"
 msgstr "{0} 열기"
@@ -2376,6 +2402,11 @@ msgstr "이메일의 링크를 다시 열거나 계정 설정에서 이메일 �
 #: src/ConnectApp.tsx
 msgid "Open the mdbase Connect desktop app and choose Connect this computer."
 msgstr "mdbase Connect 데스크톱 앱을 열고 '이 컴퓨터 연결'을 선택하세요."
+
+#: src/ConnectApp.tsx
+msgctxt "Connect interface"
+msgid "Open this collection in"
+msgstr "이 컬렉션을 다음 앱에서 열기"
 
 #: src/auth-view.tsx
 msgid "Open this through Tailscale"
@@ -2645,6 +2676,15 @@ msgctxt "Connect interface"
 msgid "Remove access"
 msgstr "액세스 제거"
 
+#: src/ApplicationAccess.tsx
+msgid "Remove installation"
+msgstr "설치 삭제"
+
+#. placeholder {0}: group.applicationName
+#: src/ApplicationAccess.tsx
+msgid "Remove only this installation of {0} from your account?"
+msgstr "계정에서 {0}의 이 설치만 삭제할까요?"
+
 #. placeholder {0}: member.name
 #. placeholder {1}: collection.display_name ?? collection.id
 #: src/ConnectApp.tsx
@@ -2659,6 +2699,7 @@ msgstr "접근 권한 제거 중…"
 msgid "Removing app and folder access…"
 msgstr "애플리케이션 및 폴더 액세스 제거하는 중…"
 
+#: src/ApplicationAccess.tsx
 #: src/ConnectApp.tsx
 msgctxt "Connect interface"
 msgid "Removing…"
@@ -3182,6 +3223,7 @@ msgctxt "Account management"
 msgid "Signing out…"
 msgstr "로그아웃 중…"
 
+#: src/AccountManagement.tsx
 #: src/api.ts
 #: src/ConnectPrimitives.tsx
 #: src/portal-model.ts
@@ -3515,6 +3557,10 @@ msgid "Those browsers will need to sign in again. This browser stays signed in."
 msgstr "해당 브라우저에서 다시 로그인해야 합니다. 이 브라우저는 로그인 상태를 유지합니다."
 
 #: src/ConnectApp.tsx
+msgid "To delete this collection, open the collection list in the editor. Open the menu next to the collection name and choose “Delete collection…”."
+msgstr "이 컬렉션을 삭제하려면 편집기에서 컬렉션 목록을 여세요. 컬렉션 이름 옆의 메뉴에서 «컬렉션 삭제…»를 선택하세요."
+
+#: src/ConnectApp.tsx
 msgid "Try a different computer name. Filtering does not revoke access."
 msgstr "다른 컴퓨터 이름을 입력하세요. 필터링은 접근 권한을 해지하지 않습니다."
 
@@ -3649,6 +3695,10 @@ msgstr "로컬 폴더 사용"
 #: src/ConnectApp.tsx
 msgid "Use a single-line collection name."
 msgstr "컬렉션 이름을 한 줄로 입력하세요."
+
+#: src/authorization-view.tsx
+msgid "Use an existing folder or Obsidian vault"
+msgstr "기존 폴더 또는 Obsidian 보관함 사용"
 
 #: src/ConnectApp.tsx
 msgid "Use an existing person or create a note"

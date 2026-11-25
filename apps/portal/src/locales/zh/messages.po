@@ -539,6 +539,11 @@ msgstr "添加一个集合以开始使用。"
 msgid "Add a new {0} type"
 msgstr "添加新的 {0} 类型"
 
+#. placeholder {0}: literal(request.application_name)
+#: src/authorization-view.tsx
+msgid "Add and sync your folder in mdbase Desktop, then return to this page. If this request expires while you set up Desktop, connect again from {0}."
+msgstr "在 mdbase Desktop 中添加并同步你的文件夹，然后返回此页面。如果在设置 Desktop 期间此请求过期，请从 {0} 重新连接。"
+
 #: src/ConnectApp.tsx
 #: src/HomePage.tsx
 #: src/portal-commands.ts
@@ -664,6 +669,10 @@ msgstr "已有账户？<0>登录</0>"
 #: src/authority-workflows.tsx
 msgid "Already-allowed access stays in place. Revoke access separately if you no longer want it."
 msgstr "已允许的访问权限保持不变。如果不再需要，请单独撤销。"
+
+#: src/authorization-view.tsx
+msgid "Also works with {collectionName}"
+msgstr "也可用于 {collectionName}"
 
 #: src/AccountManagement.tsx
 msgid "Always on"
@@ -1165,6 +1174,11 @@ msgstr "请联系此 mdbase Connect 部署的管理员。"
 msgid "Continue"
 msgstr "继续"
 
+#. placeholder {0}: pairing.connector_name
+#: src/authority-workflows.tsx
+msgid "Continue in {0} to finish. This page opens again when it's ready."
+msgstr "请在 {0} 中继续以完成。准备就绪后，此页面会再次打开。"
+
 #: src/authorization-view.tsx
 msgid "Continue in {applicationName} to use this collection."
 msgstr "请返回 {applicationName} 以使用此集合。"
@@ -1237,6 +1251,10 @@ msgstr "创建"
 #: src/authorization-view.tsx
 msgid "Create a collection"
 msgstr "创建集合"
+
+#: src/authorization-view.tsx
+msgid "Create a new collection below, or sync an existing folder in mdbase Desktop first."
+msgstr "在下方创建新集合，或先在 mdbase Desktop 中同步现有文件夹。"
 
 #: src/authorization-review.tsx
 msgid "Create a new collection…"
@@ -1508,6 +1526,10 @@ msgctxt "Connect interface"
 msgid "Downloads only"
 msgstr "仅下载"
 
+#: src/authorization-view.tsx
+msgid "Each app asks for your approval before accessing {collectionName}. Your files remain ordinary Markdown."
+msgstr "每个应用在访问 {collectionName} 前都会征求你的批准。你的文件仍然是普通的 Markdown。"
+
 #: src/authorization-capabilities.ts
 msgctxt "Application access approval"
 msgid "Edit records"
@@ -1712,6 +1734,10 @@ msgstr "生成代码"
 msgctxt "Account management"
 msgid "Generating…"
 msgstr "正在生成…"
+
+#: src/authorization-view.tsx
+msgid "Get mdbase Desktop"
+msgstr "获取 mdbase Desktop"
 
 #: src/portal-model.ts
 msgid "GitHub account @{login}"
@@ -1948,10 +1974,6 @@ msgstr "正在加载成员…"
 #: src/authorization-view.tsx
 msgid "Loading the request…"
 msgstr "正在加载请求…"
-
-#: src/AccountManagement.tsx
-msgid "Local collection and mirror files remain on your computers."
-msgstr "本地集合和镜像文件会保留在你的电脑上。"
 
 #: src/AccountManagement.tsx
 msgid "Local collection files stay on your computers and are not measured here."
@@ -2294,6 +2316,8 @@ msgstr "仅 {0}。隐藏文件夹始终排除在外。"
 msgid "Only this type definition changes. Existing records stay in place. Setup is validated before access becomes active."
 msgstr "只更改此类型定义。现有记录保持不变。访问权限生效前会验证设置。"
 
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open"
 msgstr "打开"
@@ -2301,6 +2325,8 @@ msgstr "打开"
 #. placeholder {0}: app.name
 #. placeholder {0}: pairing.connector_name
 #: src/authority-workflows.tsx
+#: src/authorization-view.tsx
+#: src/ConnectApp.tsx
 #: src/HomePage.tsx
 msgid "Open {0}"
 msgstr "打开 {0}"
@@ -2376,6 +2402,11 @@ msgstr "重新打开邮件中的链接，或在账户设置中更改电子邮件
 #: src/ConnectApp.tsx
 msgid "Open the mdbase Connect desktop app and choose Connect this computer."
 msgstr "打开 mdbase Connect 桌面应用并选择“连接此电脑”。"
+
+#: src/ConnectApp.tsx
+msgctxt "Connect interface"
+msgid "Open this collection in"
+msgstr "在其他应用中打开此集合"
 
 #: src/auth-view.tsx
 msgid "Open this through Tailscale"
@@ -2645,6 +2676,15 @@ msgctxt "Connect interface"
 msgid "Remove access"
 msgstr "移除访问权限"
 
+#: src/ApplicationAccess.tsx
+msgid "Remove installation"
+msgstr "移除此安装"
+
+#. placeholder {0}: group.applicationName
+#: src/ApplicationAccess.tsx
+msgid "Remove only this installation of {0} from your account?"
+msgstr "仅从你的账户中移除 {0} 的这个安装实例吗？"
+
 #. placeholder {0}: member.name
 #. placeholder {1}: collection.display_name ?? collection.id
 #: src/ConnectApp.tsx
@@ -2659,6 +2699,7 @@ msgstr "正在移除访问权限…"
 msgid "Removing app and folder access…"
 msgstr "正在移除应用和文件夹的访问权限…"
 
+#: src/ApplicationAccess.tsx
 #: src/ConnectApp.tsx
 msgctxt "Connect interface"
 msgid "Removing…"
@@ -3182,6 +3223,7 @@ msgctxt "Account management"
 msgid "Signing out…"
 msgstr "正在退出登录…"
 
+#: src/AccountManagement.tsx
 #: src/api.ts
 #: src/ConnectPrimitives.tsx
 #: src/portal-model.ts
@@ -3515,6 +3557,10 @@ msgid "Those browsers will need to sign in again. This browser stays signed in."
 msgstr "那些浏览器需要重新登录。此浏览器将保持登录。"
 
 #: src/ConnectApp.tsx
+msgid "To delete this collection, open the collection list in the editor. Open the menu next to the collection name and choose “Delete collection…”."
+msgstr "要删除此集合，请在编辑器中打开集合列表，然后在集合名称旁的菜单中选择“删除集合…”。"
+
+#: src/ConnectApp.tsx
 msgid "Try a different computer name. Filtering does not revoke access."
 msgstr "请尝试其他电脑名称。筛选不会撤销访问权限。"
 
@@ -3649,6 +3695,10 @@ msgstr "使用本地文件夹"
 #: src/ConnectApp.tsx
 msgid "Use a single-line collection name."
 msgstr "请使用单行的集合名称。"
+
+#: src/authorization-view.tsx
+msgid "Use an existing folder or Obsidian vault"
+msgstr "使用现有文件夹或 Obsidian 仓库"
 
 #: src/ConnectApp.tsx
 msgid "Use an existing person or create a note"
