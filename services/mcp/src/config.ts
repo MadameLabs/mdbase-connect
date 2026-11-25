@@ -10,6 +10,7 @@ export interface McpRuntimeConfig {
   trustProxy: boolean;
   callLogRetentionDays: number;
   queryTextCollections: ReadonlySet<string>;
+  jev: { apiKey: string; model: string } | null;
 }
 
 export function runtimeConfigFromEnv(env: NodeJS.ProcessEnv): McpRuntimeConfig {
@@ -38,8 +39,15 @@ export function runtimeConfigFromEnv(env: NodeJS.ProcessEnv): McpRuntimeConfig {
     callLogRetentionDays: integer(env.MDBASE_MCP_CALL_LOG_RETENTION_DAYS ?? "30", "MDBASE_MCP_CALL_LOG_RETENTION_DAYS", 1, 365),
     queryTextCollections: new Set(
       (env.MDBASE_MCP_CALL_LOG_QUERY_TEXT_COLLECTIONS ?? "").split(",").map((id) => id.trim()).filter(Boolean)
-    )
+    ),
+    jev: jevConfig(env)
   };
+}
+
+function jevConfig(env: NodeJS.ProcessEnv): McpRuntimeConfig["jev"] {
+  const apiKey = env.MDBASE_MCP_TYPESAFE_API_KEY?.trim();
+  if (!apiKey) return null;
+  return { apiKey, model: env.MDBASE_MCP_JEV_MODEL?.trim() || "jev-1.14.0" };
 }
 
 function origin(value: string, name: string): string {

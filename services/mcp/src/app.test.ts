@@ -926,7 +926,8 @@ function testConfig(): McpRuntimeConfig {
     masterKey: new SecretBox(Buffer.alloc(32, 7)),
     trustProxy: false,
     callLogRetentionDays: 30,
-    queryTextCollections: new Set()
+    queryTextCollections: new Set(),
+    jev: null
   };
 }
 

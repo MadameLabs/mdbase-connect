@@ -31,7 +31,8 @@ each one was approved for.
    lists the types. Call `read_type` for a type before filtering on its fields
    or writing a record of that type. Do not invent field names or values; use
    the names, enums and formats the type defines.
-3. **Read.** Use `query_records` to find records and `read_record` for one
+3. **Read.** When you do not know a record's path, use `search_records` first.
+   Use `query_records` to filter records and `read_record` for one
    record's full content. See [references/querying.md](references/querying.md)
    for the query format; read it before writing a `where`, `order_by` or
    `select`.
