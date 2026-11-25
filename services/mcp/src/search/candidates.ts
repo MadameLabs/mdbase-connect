@@ -15,6 +15,11 @@ export interface Candidate {
   preScore: number;
 }
 
+const STOPWORDS = new Set([
+  "e", "a", "o", "de", "do", "da", "em", "no", "na", "os", "as", "um", "uma", "com", "por", "para", "que",
+  "dos", "das", "ao", "aos", "nos", "nas"
+]);
+
 /** Lowercased, punctuation-free, de-duplicated terms; accents are kept.
  * `long` has 3 letters or more, `short` the rest. */
 export function searchTerms(query: string): { long: string[]; short: string[] } {
@@ -22,7 +27,7 @@ export function searchTerms(query: string): { long: string[]; short: string[] } 
   const long: string[] = [];
   const short: string[] = [];
   for (const raw of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
-    if (!raw || seen.has(raw)) continue;
+    if (!raw || seen.has(raw) || STOPWORDS.has(raw) || Array.from(raw).length < 2) continue;
     seen.add(raw);
     (Array.from(raw).length >= LONG_TERM_MIN ? long : short).push(raw);
   }
@@ -63,12 +68,12 @@ interface Row {
   matched: Map<string, Set<Field>>;
 }
 
-function matchedFields(term: string, path: string, title: string | null, description: string | null): Set<Field> {
+function matchedFields(term: string, long: boolean, path: string, title: string | null, description: string | null): Set<Field> {
   const fields = new Set<Field>();
   if (title?.toLowerCase().includes(term)) fields.add("title");
   if (description?.toLowerCase().includes(term)) fields.add("description");
   if (path.toLowerCase().includes(term)) fields.add("path");
-  if (fields.size === 0) fields.add("body");
+  if (fields.size === 0 && long) fields.add("body");
   return fields;
 }
 
@@ -91,25 +96,27 @@ export async function gatherCandidates(
     ...short.map((term) => ({ term, withBody: false }))
   ];
 
+  if (jobs.length === 0) return { candidates: [], total: 0 };
+
   const pages = await Promise.all(
     jobs.map(async ({ term, withBody }) => {
       const expression = termExpression(term, withBody);
       const where = folderCondition ? `(${expression}) && ${folderCondition}` : expression;
-      const input: Record<string, unknown> = { where, select: ["title", "description"], output: "metadata", limit: QUERY_LIMIT };
+      const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
       if (filters.types && filters.types.length > 0) input.types = filters.types;
       const page = await gateway.operation(connectionSetId, connectionId, "query", input, { signal });
-      return { term, results: (page as { results?: unknown } | null)?.results };
+      return { term, long: withBody, results: (page as { results?: unknown } | null)?.results };
     })
   );
 
   const rows = new Map<string, Row>();
-  for (const { term, results } of pages) {
+  for (const { term, long: isLong, results } of pages) {
     if (!Array.isArray(results)) continue;
     for (const item of results) {
-      const r = item as { path?: unknown; types?: unknown; revision?: unknown; values?: { title?: unknown; description?: unknown } | null };
+      const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
       if (typeof r?.path !== "string") continue;
-      const title = asText(r.values?.title);
-      const description = asText(r.values?.description);
+      const title = asText(r.frontmatter?.title);
+      const description = asText(r.frontmatter?.description);
       let row = rows.get(r.path);
       if (!row) {
         row = {
@@ -122,12 +129,11 @@ export async function gatherCandidates(
         };
         rows.set(r.path, row);
       }
-      row.matched.set(term, matchedFields(term, r.path, row.title, row.description));
+      row.matched.set(term, matchedFields(term, isLong, r.path, row.title, row.description));
     }
   }
 
   const candidates: Candidate[] = [];
-  const distinct = new Map<string, number>();
   for (const row of rows.values()) {
     const hits = { title: 0, description: 0, path: 0, body: 0 };
     let preScore = 0;
@@ -139,11 +145,11 @@ export async function gatherCandidates(
       }
       preScore += best;
     }
-    distinct.set(row.path, row.matched.size);
     candidates.push({ path: row.path, title: row.title, description: row.description, types: row.types, revision: row.revision, hits, preScore });
   }
+  const rowOf = (c: Candidate) => rows.get(c.path) as Row;
   candidates.sort(
-    (a, b) => b.preScore - a.preScore || (distinct.get(b.path) ?? 0) - (distinct.get(a.path) ?? 0) || a.path.localeCompare(b.path)
+    (a, b) => b.preScore - a.preScore || (rowOf(b).matched.size - rowOf(a).matched.size) || a.path.localeCompare(b.path)
   );
   return { candidates: candidates.slice(0, MAX_CANDIDATES), total: candidates.length };
 }
