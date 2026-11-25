@@ -10,6 +10,7 @@ import type { McpRuntimeConfig } from "./config.js";
 import { PostgresGrantKeyStore } from "./key-store.js";
 import { ConnectGateway } from "./connect.js";
 import { createPgCallLog } from "./call-log.js";
+import { FolderRulesCache } from "./folder-rules.js";
 import { createMcpServer } from "./mcp.js";
 import { MCP_SCOPES, OAuthError, OAuthService } from "./oauth.js";
 import { verifyMasterKey } from "./security.js";
@@ -61,6 +62,7 @@ export async function buildApp(options: BuildOptions) {
     `${config.publicUrl}/oauth/connect/callback`,
     fields => app.log.warn(fields, "Native MCP routing failed")
   );
+  const folderRules = new FolderRulesCache(gateway);
   const oauth = new OAuthService(options.db, gateway, keyStore, config.masterKey, config.publicUrl, config.resource);
   const pruning = setInterval(() => {
     oauth.pruneExpiredState().catch((error) => app.log.error({ err: error }, "MCP OAuth state pruning failed"));
@@ -234,6 +236,7 @@ export async function buildApp(options: BuildOptions) {
     if (!context) return unauthorized(reply, resourceMetadataUrl);
     const server = createMcpServer(context, gateway, oauth, writeAudit, {
       callLog,
+      folderRules,
       queryTextCollections: config.queryTextCollections
     });
     const transport = new StreamableHTTPServerTransport({
