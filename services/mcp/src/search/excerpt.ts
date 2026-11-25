@@ -17,7 +17,7 @@ interface Section {
   end: number;
 }
 
-const HEADING = /^#{1,6} +(.*?)\s*#*\s*$/;
+const HEADING = /^#{1,6} +(.*?)(?:\s+#+)?\s*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 
 function splitSections(lines: string[]): Section[] {
@@ -90,8 +90,9 @@ function cut(lines: string[], from: number, to: number, terms: readonly string[]
 }
 
 /** The section with most term hits (ties: the first; no hit: the first non-empty one), cut to EXCERPT_MAX_CHARS. */
-export function bestExcerpt(body: string, terms: readonly string[]): Excerpt | null {
-  const lines = body.split("\n");
+export function bestExcerpt(body: string, rawTerms: readonly string[]): Excerpt | null {
+  const terms = rawTerms.map((t) => t.toLowerCase());
+  const lines = body.replace(/\r\n?/g, "\n").split("\n");
   let best: { section: Section; start: number; end: number; hits: number } | null = null;
   for (const section of splitSections(lines)) {
     let start = section.start;

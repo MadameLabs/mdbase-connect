@@ -54,6 +54,21 @@ describe("bestExcerpt", () => {
   });
 });
 
+describe("bestExcerpt, correções", () => {
+  it("termo com maiúscula acha a seção", () => {
+    expect(bestExcerpt("# A\nnada\n# B\ncartão", ["Cartão"])?.heading).toBe("B");
+  });
+  it("CRLF e CR solto viram \\n", () => {
+    const e = bestExcerpt("# A\r\nlinha cartão\r\nmais\rfim", ["cartão"]);
+    expect(e!.text).toBe("# A\nlinha cartão\nmais\nfim");
+    expect(e!.lineEnd).toBe(4);
+  });
+  it("# final só sai se houver espaço antes", () => {
+    expect(bestExcerpt("# C#\nx", ["x"])?.heading).toBe("C#");
+    expect(bestExcerpt("## Título ##\nx", ["x"])?.heading).toBe("Título");
+  });
+});
+
 describe("readBodies", () => {
   const make = (results: unknown) => {
     const operation = vi.fn(async () => ({ results }));
