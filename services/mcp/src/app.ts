@@ -69,6 +69,14 @@ export async function buildApp(options: BuildOptions) {
   app.addHook("onClose", async () => clearInterval(pruning));
   const writeAudit = createPgWriteAudit(options.db);
   const callLog = createPgCallLog(options.db);
+  const purgeCallLog = () => callLog.purgeOlderThan(config.callLogRetentionDays).then(
+    (removed) => { if (removed > 0) app.log.info({ removed }, "MCP call log purged"); },
+    (error) => app.log.error({ err: error }, "MCP call log purge failed")
+  );
+  void purgeCallLog();
+  const callLogPurge = setInterval(() => void purgeCallLog(), 24 * 60 * 60_000);
+  callLogPurge.unref();
+  app.addHook("onClose", async () => clearInterval(callLogPurge));
   const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource/mcp`;
 
   await app.register(formbody);
