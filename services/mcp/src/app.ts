@@ -9,6 +9,7 @@ import type { DatabasePool } from "./db.js";
 import type { McpRuntimeConfig } from "./config.js";
 import { PostgresGrantKeyStore } from "./key-store.js";
 import { ConnectGateway } from "./connect.js";
+import { createPgCallLog } from "./call-log.js";
 import { createMcpServer } from "./mcp.js";
 import { MCP_SCOPES, OAuthError, OAuthService } from "./oauth.js";
 import { verifyMasterKey } from "./security.js";
@@ -67,6 +68,15 @@ export async function buildApp(options: BuildOptions) {
   pruning.unref();
   app.addHook("onClose", async () => clearInterval(pruning));
   const writeAudit = createPgWriteAudit(options.db);
+  const callLog = createPgCallLog(options.db);
+  const purgeCallLog = () => callLog.purgeOlderThan(config.callLogRetentionDays).then(
+    (removed) => { if (removed > 0) app.log.info({ removed }, "MCP call log purged"); },
+    (error) => app.log.error({ err: error }, "MCP call log purge failed")
+  );
+  void purgeCallLog();
+  const callLogPurge = setInterval(() => void purgeCallLog(), 24 * 60 * 60_000);
+  callLogPurge.unref();
+  app.addHook("onClose", async () => clearInterval(callLogPurge));
   const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource/mcp`;
 
   await app.register(formbody);
@@ -222,7 +232,10 @@ export async function buildApp(options: BuildOptions) {
   app.post("/mcp", async (request, reply) => {
     const context = await authenticateRequest(request.headers.authorization, oauth);
     if (!context) return unauthorized(reply, resourceMetadataUrl);
-    const server = createMcpServer(context, gateway, oauth, writeAudit);
+    const server = createMcpServer(context, gateway, oauth, writeAudit, {
+      callLog,
+      queryTextCollections: config.queryTextCollections
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true

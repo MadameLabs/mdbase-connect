@@ -182,6 +182,27 @@ export async function migrate(db: DatabaseQueryable): Promise<void> {
     CREATE INDEX IF NOT EXISTS mcp_write_audit_client_created_idx ON mcp_write_audit (client_id, created_at);
     CREATE INDEX IF NOT EXISTS mcp_write_audit_path_idx ON mcp_write_audit (path);
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS mcp_call_log (
+      id bigserial PRIMARY KEY,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      duration_ms integer NOT NULL,
+      client_id text NOT NULL,
+      client_name text,
+      connection_set_id text NOT NULL,
+      connection_id text,
+      collection_id text,
+      tool text NOT NULL,
+      outcome text NOT NULL CHECK (outcome IN ('ok', 'error')),
+      error_code text,
+      result_count integer,
+      paths text[],
+      query_text text,
+      ranking text
+    );
+    CREATE INDEX IF NOT EXISTS mcp_call_log_collection_created_idx ON mcp_call_log (collection_id, created_at);
+    CREATE INDEX IF NOT EXISTS mcp_call_log_client_created_idx ON mcp_call_log (client_id, created_at);
+  `);
   // Retain the unused legacy column until the previous release is outside the
   // production rollback window. Runtime compatibility is not a license for a
   // destructive deploy-time migration.
