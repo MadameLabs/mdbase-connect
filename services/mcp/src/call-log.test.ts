@@ -75,6 +75,19 @@ describe("createPgCallLog", () => {
   });
 });
 
+describe("query_text", () => {
+  it("corta query_text em 2.000 caracteres", async () => {
+    const db = await createDatabase("memory");
+    const log = createPgCallLog(db);
+
+    await log.record(entry({ queryText: "x".repeat(5000) }));
+
+    const { rows } = await db.query<{ query_text: string }>("SELECT query_text FROM mcp_call_log");
+    expect(rows[0].query_text).toHaveLength(2000);
+    await db.end();
+  });
+});
+
 describe("noCallLog", () => {
   it("não grava nada", async () => {
     await expect(noCallLog.record(entry())).resolves.toBeUndefined();
@@ -106,7 +119,7 @@ async function connectServer(gateway: unknown, callLog: CallLog, queryTextCollec
   return client;
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+const settled = (entries: unknown[]) => vi.waitFor(() => expect(entries.length).toBeGreaterThan(0));
 const connections = async () => [{ id: CONN, collection_id: "col-1", display_name: "x", operations: [], scope: {}, authority: "local" }];
 
 describe("registro das chamadas no servidor MCP", () => {
@@ -115,7 +128,7 @@ describe("registro das chamadas no servidor MCP", () => {
     const { log, entries } = fakeLog();
     const client = await connectServer(gateway, log);
     await client.callTool({ name: "read_record", arguments: { connection_id: CONN, path: "a/b.md" } });
-    await settle();
+    await settled(entries);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       clientId: "client-enola", connectionSetId: "set-1", connectionId: CONN, collectionId: "col-1",
@@ -132,7 +145,7 @@ describe("registro das chamadas no servidor MCP", () => {
     const { log, entries } = fakeLog();
     const client = await connectServer(gateway, log);
     await client.callTool({ name: "query_records", arguments: { connection_id: CONN, where: 'title == "x"' } });
-    await settle();
+    await settled(entries);
     expect(entries[0]).toMatchObject({ tool: "query_records", resultCount: 3, paths: ["a.md", "b.md", "c.md"] });
     expect(JSON.stringify(entries[0])).not.toContain("corpo secreto");
     await client.close();
@@ -144,17 +157,17 @@ describe("registro das chamadas no servidor MCP", () => {
     const inList = fakeLog();
     const c1 = await connectServer(gateway, inList.log, new Set(["col-1"]));
     await c1.callTool({ name: "query_records", arguments: { connection_id: CONN, where } });
-    await settle();
+    await settled(inList.entries);
     expect(inList.entries[0]!.queryText).toBe(where);
     const outList = fakeLog();
     const c2 = await connectServer(gateway, outList.log, new Set(["outra"]));
     await c2.callTool({ name: "query_records", arguments: { connection_id: CONN, where } });
-    await settle();
+    await settled(outList.entries);
     expect(outList.entries[0]!.queryText).toBeNull();
     const noWhere = fakeLog();
     const c3 = await connectServer(gateway, noWhere.log, new Set(["col-1"]));
     await c3.callTool({ name: "query_records", arguments: { connection_id: CONN } });
-    await settle();
+    await settled(outList.entries);
     expect(noWhere.entries[0]!.queryText).toBeNull();
   });
 
@@ -166,7 +179,7 @@ describe("registro das chamadas no servidor MCP", () => {
     const { log, entries } = fakeLog();
     const client = await connectServer(gateway, log);
     const result = await client.callTool({ name: "read_record", arguments: { connection_id: CONN, path: "a.md" } });
-    await settle();
+    await settled(entries);
     expect(result.isError).toBe(true);
     expect(entries[0]).toMatchObject({ outcome: "error", errorCode: "insufficient_collection_access", resultCount: null });
   });
@@ -178,7 +191,7 @@ describe("registro das chamadas no servidor MCP", () => {
     const { log } = fakeLog(async () => { throw new Error("banco fora"); });
     const client = await connectServer(gateway, log);
     const result = await client.callTool({ name: "read_record", arguments: { connection_id: CONN, path: "a.md" } });
-    await settle();
+    await vi.waitFor(() => expect(spy).toHaveBeenCalled());
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toEqual(value);
     expect(spy).toHaveBeenCalled();
@@ -198,9 +211,38 @@ describe("registro das chamadas no servidor MCP", () => {
     const { log, entries } = fakeLog();
     const client = await connectServer(gateway, log);
     await client.callTool({ name: "update_record", arguments: { connection_id: CONN, path: "n.md", body: "corpo secreto" } });
-    await settle();
+    await settled(entries);
     expect(entries[0]).toMatchObject({ tool: "update_record", outcome: "ok", paths: ["n.md"] });
     expect(JSON.stringify(entries[0])).not.toContain("corpo secreto");
+  });
+});
+
+describe("registro de tipos", () => {
+  it("read_type por nome grava paths vazio, não o nome do tipo", async () => {
+    const gateway = { operation: vi.fn(async () => ({ name: "tarefa", revision: "r1" })), listConnections: vi.fn(connections) };
+    const { log, entries } = fakeLog();
+    const client = await connectServer(gateway, log);
+    await client.callTool({ name: "read_type", arguments: { connection_id: CONN, name: "tarefa" } });
+    await settled(entries);
+    expect(entries[0]).toMatchObject({ tool: "read_type", paths: [] });
+  });
+
+  it("update_type por nome grava paths vazio", async () => {
+    const gateway = { operation: vi.fn(async () => ({ revision: "r2" })), listConnections: vi.fn(connections) };
+    const { log, entries } = fakeLog();
+    const client = await connectServer(gateway, log);
+    await client.callTool({ name: "update_type", arguments: { connection_id: CONN, name: "tarefa", document: "x", if_revision: "r1" } });
+    await settled(entries);
+    expect(entries[0]).toMatchObject({ tool: "update_type", paths: [] });
+  });
+
+  it("read_type com caminho grava esse caminho", async () => {
+    const gateway = { operation: vi.fn(async () => ({ revision: "r1" })), listConnections: vi.fn(connections) };
+    const { log, entries } = fakeLog();
+    const client = await connectServer(gateway, log);
+    await client.callTool({ name: "read_type", arguments: { connection_id: CONN, path: "_types/tarefa.md" } });
+    await settled(entries);
+    expect(entries[0]).toMatchObject({ paths: ["_types/tarefa.md"] });
   });
 });
 

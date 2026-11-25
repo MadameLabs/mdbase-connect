@@ -283,7 +283,8 @@ function registerWriteTools(registerTool: McpServer["registerTool"], context: Mc
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
     gateway, oauth, context, connection_id, "update_type", input, mutation_id, signal,
     audit, "update_type", { path: input.path ?? input.name ?? null, toPath: null },
-    track
+    // O registro de chamadas só guarda caminho de verdade: o nome de um tipo não entra em paths.
+    (tool, connId) => track(tool, connId, { path: input.path ?? null, to: null })
   ));
 }
 

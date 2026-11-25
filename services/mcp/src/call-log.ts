@@ -1,6 +1,7 @@
 import type { DatabaseQueryable } from "./db.js";
 
 const MAX_PATHS = 50;
+const MAX_QUERY_TEXT = 2000;
 
 // Só metadados: nunca o conteúdo das notas.
 export interface CallLogEntry {
@@ -42,7 +43,7 @@ export function createPgCallLog(db: DatabaseQueryable): CallLog {
         [
           entry.clientId, entry.connectionSetId, entry.connectionId, entry.collectionId, entry.tool,
           entry.durationMs, entry.outcome, entry.errorCode, entry.resultCount,
-          entry.paths.slice(0, MAX_PATHS), entry.queryText, entry.ranking
+          entry.paths.slice(0, MAX_PATHS), entry.queryText?.slice(0, MAX_QUERY_TEXT) ?? null, entry.ranking
         ]
       );
     },
