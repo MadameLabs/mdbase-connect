@@ -26,7 +26,7 @@ function fakeGateway(rows: Row[], operations: string[] = ["query", "read"], onOp
     return {
       results: rows.map((r) => ({
         path: r.path, types: ["note"], revision: "r1",
-        frontmatter: { ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}) }
+        values: { ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}) }
       }))
     };
   });
@@ -218,6 +218,32 @@ describe("search_records", () => {
     await client.callTool({ name: "search_records", arguments: { connection_id: CONN, query: "reuniao" } });
     expect(order.indexOf("bodies")).toBeGreaterThan(-1);
     expect(order.filter((o) => o === "peek-indexes").length).toBe(1);
+  });
+
+  it("does not peek the index list without a Jev client", async () => {
+    const gateway = fakeGateway(manyRows(2), ["query"]);
+    const indexList = { peek: vi.fn(() => null) } as unknown as IndexListCache;
+    const server = createMcpServer({ clientId: "c", connectionSetId: "set-1", scopes: ["mdbase:read"] }, gateway, {} as OAuthService, undefined, { indexList, jev: null });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "t", version: "0" });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    await client.callTool({ name: "search_records", arguments: { connection_id: CONN, query: "reuniao" } });
+    expect(indexList.peek).not.toHaveBeenCalled();
+  });
+
+  it("title falls back to the file name without .md, in results and in the Jev state", async () => {
+    const jev = jevWith({ "notas/sem-titulo.md": 0.9 });
+    const { search } = await connect(fakeGateway([{ path: "notas/sem-titulo.md", body: "reuniao" }]), { jev });
+    const { json } = await search({ query: "reuniao" });
+    expect(json.results[0].title).toBe("sem-titulo");
+    const sent = (jev.rank as unknown as { mock: { calls: Array<[{ candidates: Array<{ title: string | null }> }]> } }).mock.calls[0][0];
+    expect(sent.candidates[0].title).toBe("sem-titulo");
+  });
+
+  it("mentions the line range base in the tool description", async () => {
+    const { client } = await connect(fakeGateway([]));
+    const tool = (await client.listTools()).tools.find((t) => t.name === "search_records");
+    expect(tool?.description).toContain("line_start and line_end count lines in the record body as returned by read_record.");
   });
 
   it("warns when the bodies cannot be read, still returning results", async () => {

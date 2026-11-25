@@ -179,7 +179,7 @@ export function createMcpServer(
 
   registerTool("search_records", {
     title: "Search mdbase records",
-    description: "Search one approved collection by words and meaning. Returns a few records in order of relevance, each with its path, line range, description and the matching excerpt, so you can decide without reading the record. Prefer it to query_records when you do not know the path or the exact field values. It does not change anything. folder_rule is null when the folder has no rule or rules are not known yet.",
+    description: "Search one approved collection by words and meaning. Returns a few records in order of relevance, each with its path, line range, description and the matching excerpt, so you can decide without reading the record. Prefer it to query_records when you do not know the path or the exact field values. It does not change anything. folder_rule is null when the folder has no rule or rules are not known yet. line_start and line_end count lines in the record body as returned by read_record.",
     inputSchema: {
       connection_id: connectionId,
       query: z.string().min(1).max(500).describe("What to look for, in plain words"),

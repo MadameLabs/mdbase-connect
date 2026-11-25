@@ -3,12 +3,15 @@ import type { ConnectGateway } from "../connect.js";
 import { MAX_CANDIDATES, gatherCandidates, searchTerms } from "./candidates.js";
 
 type Row = { path: string; types?: string[]; revision?: string; frontmatter?: Record<string, unknown> };
-/** results by term: the term is found in the `where` literal. */
-function fake(byTerm: Record<string, Row[]>) {
+/** results by term: the term is found in the `where` literal. `more` lists terms whose
+ * full (body) query reports has_more; their restricted re-query gets `restricted[term]`. */
+function fake(byTerm: Record<string, Row[]>, more: string[] = [], restricted: Record<string, Row[]> = {}) {
   const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
-    const term = Object.keys(byTerm).find((t) => input.where.includes(`contains("${t}")`));
-    const results = (term ? byTerm[term] : []).map((r) => ({ revision: "r", frontmatter: {}, ...r }));
-    return { results, meta: {} };
+    const term = Object.keys(byTerm).find((t) => input.where.includes(`contains("${t}")`) || input.where.includes(`])${t}([`));
+    const isBody = input.where.includes("file.body");
+    const source = term && more.includes(term) && !isBody ? restricted[term] ?? [] : term ? byTerm[term] : [];
+    const results = source.map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", values: r.frontmatter ?? {} }));
+    return { results, meta: { has_more: term !== undefined && more.includes(term) && isBody } };
   });
   return { gateway: { operation } as unknown as ConnectGateway, operation };
 }
@@ -28,6 +31,25 @@ describe("searchTerms", () => {
   });
 });
 
+describe("searchTerms: teto", () => {
+  it("mantém no máximo 8 termos, os mais longos, empate pela primeira aparição", () => {
+    const paragraph = "o gestor de projetos pediu uma analise detalhada sobre custos operacionais mensais da empresa incluindo ia pf pj e fornecedores externos";
+    const { long, short } = searchTerms(paragraph);
+    expect(long.length + short.length).toBe(8);
+    expect(long).toEqual(["projetos", "analise", "detalhada", "operacionais", "mensais", "incluindo", "fornecedores", "externos"]);
+    expect(short).toEqual([]);
+  });
+  it("siglas contam no teto e perdem para termos mais longos", () => {
+    const { long, short } = searchTerms("ia aaa bbb ccc ddd eee fff ggg hhh");
+    expect(long).toEqual(["aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh"]);
+    expect(short).toEqual([]);
+    expect(searchTerms("ia aaa").short).toEqual(["ia"]);
+  });
+  it("stopwords em inglês saem", () => {
+    expect(searchTerms("the and of to in for on with an is are at by from or ia")).toEqual({ long: [], short: ["ia"] });
+  });
+});
+
 describe("gatherCandidates", () => {
   it("nota sem title nem description que bate no corpo continua candidata", async () => {
     const { gateway } = fake({ cartão: [{ path: "a.md", frontmatter: {} }] });
@@ -44,13 +66,15 @@ describe("gatherCandidates", () => {
       expect(w).not.toContain("file.body");
       expect(w).toContain("has(raw.title)");
       expect(w).toContain("has(raw.description)");
-      expect(w).toContain("file.path.lower()");
+      expect(w).toContain("file.path.lower().matches(");
+      expect(w).not.toContain(".contains(");
     }
+    expect(wheres(operation)[0]).toContain('"(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)"');
     expect(r.candidates.map((c) => c.path).sort()).toEqual(["x-pf.md", "y.md"]);
     const input = operation.mock.calls[0][3] as Record<string, unknown>;
-    expect(input.limit).toBe(1000);
-    expect(input).not.toHaveProperty("output");
-    expect(input).not.toHaveProperty("select");
+    expect(input.limit).toBe(300);
+    expect(input.output).toBe("metadata");
+    expect(input.select).toEqual(["title", "description"]);
     expect(input).not.toHaveProperty("include_body");
     expect(input).not.toHaveProperty("types");
   });
@@ -114,6 +138,48 @@ describe("gatherCandidates", () => {
     const r = await gatherCandidates(gateway, "s", "c", "fatura", {});
     expect(r.candidates[0].preScore).toBe(3);
     expect(r.candidates[0].hits).toEqual({ title: 1, description: 0, path: 0, body: 0 });
+  });
+
+  it("sigla casa por palavra: ia não acerta em 'media'", async () => {
+    const { gateway } = fake({ ia: [
+      { path: "midia.md", frontmatter: { title: "Mídia social" } },
+      { path: "x/ia-geral.md", frontmatter: {} },
+      { path: "y.md", frontmatter: { title: "Uso de IA no dia a dia" } }
+    ] });
+    const r = await gatherCandidates(gateway, "s", "c", "ia", {});
+    const by = Object.fromEntries(r.candidates.map((c) => [c.path, c.hits]));
+    expect(by["midia.md"]).toEqual({ title: 0, description: 0, path: 0, body: 0 });
+    expect(by["x/ia-geral.md"].path).toBe(1);
+    expect(by["y.md"].title).toBe(1);
+  });
+
+  it("termo comum (has_more): refaz sem corpo, usa esse resultado e não dá crédito de corpo", async () => {
+    const { gateway, operation } = fake(
+      { reuniao: [{ path: "corpo.md" }, { path: "t.md", frontmatter: { title: "Reunião" } }] },
+      ["reuniao"],
+      { reuniao: [{ path: "t.md", frontmatter: { title: "reuniao semanal" } }] }
+    );
+    const r = await gatherCandidates(gateway, "s", "c", "reuniao", {});
+    expect(operation).toHaveBeenCalledTimes(2);
+    const [first, second] = wheres(operation);
+    expect(first).toContain("file.body");
+    expect(second).not.toContain("file.body");
+    expect((operation.mock.calls[1][3] as unknown as { limit: number }).limit).toBe(300);
+    expect(r.candidates.map((c) => c.path)).toEqual(["t.md"]);
+    expect(r.candidates[0].hits).toEqual({ title: 1, description: 0, path: 0, body: 0 });
+  });
+
+  it("cursor também marca termo comum", async () => {
+    const operation = vi.fn(async (_s: string, _c: string, _o: string, input: { where: string }) =>
+      ({ results: [], meta: input.where.includes("file.body") ? { has_more: false, cursor: "abc" } : {} }));
+    await gatherCandidates({ operation } as unknown as ConnectGateway, "s", "c", "reuniao", {});
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
+  it("termo curto com has_more não é refeito", async () => {
+    const operation = vi.fn(async () => ({ results: [], meta: { has_more: true } }));
+    await gatherCandidates({ operation } as unknown as ConnectGateway, "s", "c", "ia", {});
+    expect(operation).toHaveBeenCalledTimes(1);
   });
 
   it("termo curto sem acerto em título, descrição ou caminho não conta como corpo", async () => {

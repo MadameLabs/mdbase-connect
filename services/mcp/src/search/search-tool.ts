@@ -63,6 +63,11 @@ function folderOf(path: string): string {
   return at === -1 ? "" : path.slice(0, at);
 }
 
+function fileStem(path: string): string {
+  const name = path.split("/").pop() ?? path;
+  return name.endsWith(".md") ? name.slice(0, -3) : name;
+}
+
 function warningOf(error: unknown): string {
   return error instanceof JevError ? error.code : "jev_unavailable";
 }
@@ -90,7 +95,7 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
   if (candidates.length === 0) return output;
 
   // Peeks never wait: the first search of a connection may come without them.
-  const indexes: IndexOption[] = deps.indexList?.peek(connectionSetId, connectionId) ?? [];
+  const indexes: IndexOption[] = deps.jev ? deps.indexList?.peek(connectionSetId, connectionId) ?? [] : [];
   const rulePaths = deps.folderRules?.peek(connectionSetId, connectionId) ?? null;
 
   let bodies = new Map<string, string>();
@@ -113,7 +118,7 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
     try {
       const jev = await deps.jev.rank({
         query: input.query,
-        candidates: candidates.map((c) => ({ path: c.path, title: c.title, description: c.description, excerpt: excerpts.get(c.path)?.text ?? null })),
+        candidates: candidates.map((c) => ({ path: c.path, title: c.title ?? fileStem(c.path), description: c.description, excerpt: excerpts.get(c.path)?.text ?? null })),
         indexes
       }, signal);
       output.ranking = "jev";
@@ -130,7 +135,7 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
       path: candidate.path,
       line_start: excerpt?.lineStart ?? null,
       line_end: excerpt?.lineEnd ?? null,
-      title: candidate.title,
+      title: candidate.title ?? fileStem(candidate.path),
       description: candidate.description,
       excerpt: excerpt?.text ?? null,
       heading: excerpt?.heading ?? null,

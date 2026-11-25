@@ -2,7 +2,8 @@ import type { ConnectGateway } from "../connect.js";
 
 export const PRE_SCORE_WEIGHTS = { title: 3, description: 2, path: 2, body: 1 } as const;
 export const MAX_CANDIDATES = 30;
-const QUERY_LIMIT = 1000;
+export const QUERY_LIMIT = 300;
+export const MAX_TERMS = 8;
 const LONG_TERM_MIN = 3;
 
 export interface Candidate {
@@ -17,21 +18,28 @@ export interface Candidate {
 
 const STOPWORDS = new Set([
   "e", "a", "o", "de", "do", "da", "em", "no", "na", "os", "as", "um", "uma", "com", "por", "para", "que",
-  "dos", "das", "ao", "aos", "nos", "nas"
+  "dos", "das", "ao", "aos", "nos", "nas",
+  "the", "and", "of", "to", "in", "for", "on", "with", "an", "is", "are", "at", "by", "from", "or"
 ]);
 
-/** Lowercased, punctuation-free, de-duplicated terms; accents are kept.
- * `long` has 3 letters or more, `short` the rest. */
+/** Lowercased, punctuation-free, de-duplicated terms; accents are kept. At most
+ * MAX_TERMS survive, the longest first (ties by first appearance), long and short
+ * together; each list keeps the order of appearance. `long` has 3 letters or more,
+ * `short` the rest. */
 export function searchTerms(query: string): { long: string[]; short: string[] } {
   const seen = new Set<string>();
-  const long: string[] = [];
-  const short: string[] = [];
+  const all: Array<{ term: string; at: number; len: number }> = [];
   for (const raw of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
-    if (!raw || seen.has(raw) || STOPWORDS.has(raw) || Array.from(raw).length < 2) continue;
+    const len = Array.from(raw).length;
+    if (!raw || seen.has(raw) || STOPWORDS.has(raw) || len < 2) continue;
     seen.add(raw);
-    (Array.from(raw).length >= LONG_TERM_MIN ? long : short).push(raw);
+    all.push({ term: raw, at: all.length, len });
   }
-  return { long, short };
+  const kept = [...all].sort((a, b) => b.len - a.len || a.at - b.at).slice(0, MAX_TERMS).sort((a, b) => a.at - b.at);
+  return {
+    long: kept.filter((t) => t.len >= LONG_TERM_MIN).map((t) => t.term),
+    short: kept.filter((t) => t.len < LONG_TERM_MIN).map((t) => t.term)
+  };
 }
 
 /** A CEL string literal; the text is never concatenated raw. */
@@ -45,14 +53,24 @@ export function celString(text: string): string {
   return `"${body}"`;
 }
 
-function termExpression(term: string, withBody: boolean): string {
-  const lit = celString(term);
+const BOUNDARY_CLASS = "[^a-z0-9à-ÿ]";
+
+/** Regex source for a short term as a whole word; terms are letters and digits only. */
+function boundaryPattern(term: string): string {
+  return `(^|${BOUNDARY_CLASS})${term}(${BOUNDARY_CLASS}|$)`;
+}
+
+function termExpression(term: string, withBody: boolean, whole: boolean): string {
+  const test = (field: string) => {
+    const lit = celString(whole ? boundaryPattern(term) : term);
+    return whole ? `${field}.lower().matches(${lit})` : `${field}.lower().contains(${lit})`;
+  };
   const parts = [
-    `(has(raw.title) && raw.title.lower().contains(${lit}))`,
-    `(has(raw.description) && raw.description.lower().contains(${lit}))`,
-    `file.path.lower().contains(${lit})`
+    `(has(raw.title) && ${test("raw.title")})`,
+    `(has(raw.description) && ${test("raw.description")})`,
+    test("file.path")
   ];
-  if (withBody) parts.push(`file.body.lower().contains(${lit})`);
+  if (withBody) parts.push(test("file.body"));
   return parts.join(" || ");
 }
 
@@ -68,12 +86,14 @@ interface Row {
   matched: Map<string, Set<Field>>;
 }
 
-function matchedFields(term: string, long: boolean, path: string, title: string | null, description: string | null): Set<Field> {
+function matchedFields(term: string, whole: boolean, body: boolean, path: string, title: string | null, description: string | null): Set<Field> {
+  const re = whole ? new RegExp(boundaryPattern(term)) : null;
+  const has = (text: string) => (re ? re.test(text.toLowerCase()) : text.toLowerCase().includes(term));
   const fields = new Set<Field>();
-  if (title?.toLowerCase().includes(term)) fields.add("title");
-  if (description?.toLowerCase().includes(term)) fields.add("description");
-  if (path.toLowerCase().includes(term)) fields.add("path");
-  if (fields.size === 0 && long) fields.add("body");
+  if (title !== null && has(title)) fields.add("title");
+  if (description !== null && has(description)) fields.add("description");
+  if (has(path)) fields.add("path");
+  if (fields.size === 0 && body) fields.add("body");
   return fields;
 }
 
@@ -91,32 +111,43 @@ export async function gatherCandidates(
   const folderCondition = filters.folder
     ? `file.path.startsWith(${celString(filters.folder.endsWith("/") ? filters.folder : `${filters.folder}/`)})`
     : null;
-  const jobs = [
-    ...long.map((term) => ({ term, withBody: true })),
-    ...short.map((term) => ({ term, withBody: false }))
-  ];
+  const jobs = [...long.map((term) => ({ term, short: false })), ...short.map((term) => ({ term, short: true }))];
 
   if (jobs.length === 0) return { candidates: [], total: 0 };
 
+  const run = async (term: string, isShort: boolean, withBody: boolean) => {
+    const expression = termExpression(term, withBody, isShort);
+    const where = folderCondition ? `(${expression}) && ${folderCondition}` : expression;
+    const input: Record<string, unknown> = { where, limit: QUERY_LIMIT, output: "metadata", select: ["title", "description"] };
+    if (filters.types && filters.types.length > 0) input.types = filters.types;
+    const page = (await gateway.operation(connectionSetId, connectionId, "query", input, { signal })) as
+      { results?: unknown; meta?: { has_more?: unknown; cursor?: unknown } | null } | null;
+    const more = page?.meta?.has_more === true || (typeof page?.meta?.cursor === "string" && page.meta.cursor !== "");
+    return { results: page?.results, more };
+  };
+
   const pages = await Promise.all(
-    jobs.map(async ({ term, withBody }) => {
-      const expression = termExpression(term, withBody);
-      const where = folderCondition ? `(${expression}) && ${folderCondition}` : expression;
-      const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
-      if (filters.types && filters.types.length > 0) input.types = filters.types;
-      const page = await gateway.operation(connectionSetId, connectionId, "query", input, { signal });
-      return { term, long: withBody, results: (page as { results?: unknown } | null)?.results };
+    jobs.map(async ({ term, short: isShort }) => {
+      let page = await run(term, isShort, !isShort);
+      let body = !isShort;
+      // A term with more matches than one page is common: the body clause would only
+      // add noise, so ask again over title, description and path alone.
+      if (!isShort && page.more) {
+        page = await run(term, false, false);
+        body = false;
+      }
+      return { term, whole: isShort, body, results: page.results };
     })
   );
 
   const rows = new Map<string, Row>();
-  for (const { term, long: isLong, results } of pages) {
+  for (const { term, whole, body, results } of pages) {
     if (!Array.isArray(results)) continue;
     for (const item of results) {
-      const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
+      const r = item as { path?: unknown; types?: unknown; revision?: unknown; values?: { title?: unknown; description?: unknown } | null };
       if (typeof r?.path !== "string") continue;
-      const title = asText(r.frontmatter?.title);
-      const description = asText(r.frontmatter?.description);
+      const title = asText(r.values?.title);
+      const description = asText(r.values?.description);
       let row = rows.get(r.path);
       if (!row) {
         row = {
@@ -129,7 +160,7 @@ export async function gatherCandidates(
         };
         rows.set(r.path, row);
       }
-      row.matched.set(term, matchedFields(term, isLong, r.path, row.title, row.description));
+      row.matched.set(term, matchedFields(term, whole, body, r.path, row.title, row.description));
     }
   }
 
