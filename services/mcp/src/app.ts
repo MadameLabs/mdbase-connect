@@ -9,6 +9,7 @@ import type { DatabasePool } from "./db.js";
 import type { McpRuntimeConfig } from "./config.js";
 import { PostgresGrantKeyStore } from "./key-store.js";
 import { ConnectGateway } from "./connect.js";
+import { createPgCallLog } from "./call-log.js";
 import { createMcpServer } from "./mcp.js";
 import { MCP_SCOPES, OAuthError, OAuthService } from "./oauth.js";
 import { verifyMasterKey } from "./security.js";
@@ -67,6 +68,7 @@ export async function buildApp(options: BuildOptions) {
   pruning.unref();
   app.addHook("onClose", async () => clearInterval(pruning));
   const writeAudit = createPgWriteAudit(options.db);
+  const callLog = createPgCallLog(options.db);
   const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource/mcp`;
 
   await app.register(formbody);
@@ -222,7 +224,10 @@ export async function buildApp(options: BuildOptions) {
   app.post("/mcp", async (request, reply) => {
     const context = await authenticateRequest(request.headers.authorization, oauth);
     if (!context) return unauthorized(reply, resourceMetadataUrl);
-    const server = createMcpServer(context, gateway, oauth, writeAudit);
+    const server = createMcpServer(context, gateway, oauth, writeAudit, {
+      callLog,
+      queryTextCollections: config.queryTextCollections
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true

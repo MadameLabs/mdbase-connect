@@ -8,6 +8,8 @@ export interface McpRuntimeConfig {
   resource: string;
   masterKey: SecretBox;
   trustProxy: boolean;
+  callLogRetentionDays: number;
+  queryTextCollections: ReadonlySet<string>;
 }
 
 export function runtimeConfigFromEnv(env: NodeJS.ProcessEnv): McpRuntimeConfig {
@@ -32,7 +34,11 @@ export function runtimeConfigFromEnv(env: NodeJS.ProcessEnv): McpRuntimeConfig {
     connectUrl,
     resource: `${publicUrl}/mcp`,
     masterKey: SecretBox.fromSecret(masterKey),
-    trustProxy: env.MDBASE_MCP_TRUST_PROXY === "1"
+    trustProxy: env.MDBASE_MCP_TRUST_PROXY === "1",
+    callLogRetentionDays: integer(env.MDBASE_MCP_CALL_LOG_RETENTION_DAYS ?? "30", "MDBASE_MCP_CALL_LOG_RETENTION_DAYS", 1, 365),
+    queryTextCollections: new Set(
+      (env.MDBASE_MCP_CALL_LOG_QUERY_TEXT_COLLECTIONS ?? "").split(",").map((id) => id.trim()).filter(Boolean)
+    )
   };
 }
 

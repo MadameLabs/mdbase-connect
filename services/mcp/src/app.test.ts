@@ -866,7 +866,9 @@ function testConfig(): McpRuntimeConfig {
     connectUrl: "https://connect.example",
     resource: "https://mcp.example/mcp",
     masterKey: new SecretBox(Buffer.alloc(32, 7)),
-    trustProxy: false
+    trustProxy: false,
+    callLogRetentionDays: 30,
+    queryTextCollections: new Set()
   };
 }
 

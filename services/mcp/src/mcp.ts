@@ -5,6 +5,7 @@ import { normalizeCollectionChange } from "./change-events.js";
 import { z } from "zod";
 import { ConnectGateway, GatewayOperationError } from "./connect.js";
 import { OAuthService, type McpAuthContext } from "./oauth.js";
+import { noCallLog, type CallLog } from "./call-log.js";
 import { refuseUnrecordedWrites, type WriteAudit, type WriteOutcome, type WriteTool } from "./write-audit.js";
 
 const connectionId = z.uuid().describe("Opaque connection ID returned by list_connections");
@@ -26,8 +27,10 @@ export function createMcpServer(
   context: McpAuthContext,
   gateway: ConnectGateway,
   oauth: OAuthService,
-  audit: WriteAudit = refuseUnrecordedWrites
+  audit: WriteAudit = refuseUnrecordedWrites,
+  options: { callLog?: CallLog; queryTextCollections?: ReadonlySet<string> } = {}
 ): McpServer {
+  const track = callTracker(context, gateway, options.callLog ?? noCallLog, options.queryTextCollections ?? new Set());
   const server = new McpServer(
     { name: "mdbase", version: "0.1.0-beta.152" },
     { instructions: SERVER_INSTRUCTIONS }
@@ -73,7 +76,7 @@ export function createMcpServer(
     description: "Return one approved collection's metadata: the operations this connection allows, its types, contracts and current change cursor. Call it once per conversation for each collection before relying on type or field names. It does not change anything.",
     inputSchema: { connection_id: connectionId },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, ({ connection_id }, { signal }) => operationTool(gateway, oauth, context, connection_id, "describe", {}, { signal }));
+  }, ({ connection_id }, { signal }) => operationTool(gateway, oauth, context, connection_id, "describe", {}, { signal, observe: track("describe_collection", connection_id, {}) }));
 
   registerTool("list_changes", {
     title: "List collection changes",
@@ -85,7 +88,7 @@ export function createMcpServer(
       limit: z.number().int().min(1).max(200).optional()
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, ({ connection_id, ...input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "changes", input, { signal }));
+  }, ({ connection_id, ...input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "changes", input, { signal, observe: track("list_changes", connection_id, input) }));
 
   registerTool("query_records", {
     title: "Query mdbase records",
@@ -114,7 +117,7 @@ export function createMcpServer(
       contract: object.optional().describe("Data-contract query: { id, version, type? } from describe_collection; allows where, limit and cursor only")
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, ({ connection_id, ...input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "query", input, { signal }));
+  }, ({ connection_id, ...input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "query", input, { signal, observe: track("query_records", connection_id, input) }));
 
   registerTool("release_query_cursor", {
     title: "Release an mdbase query cursor",
@@ -128,7 +131,7 @@ export function createMcpServer(
     connection_id,
     "query",
     { release_cursor: cursor },
-    { signal }
+    { signal, observe: track("release_query_cursor", connection_id, {}) }
   ));
 
   registerTool("read_record", {
@@ -136,14 +139,14 @@ export function createMcpServer(
     description: "Read one record's frontmatter, body and current revision by its collection-relative path, such as tasks/renew-passport.md; never pass a local file system path. Use it to show a record and to get the revision to pass as if_revision before changing or deleting it. It does not change anything.",
     inputSchema: { connection_id: connectionId, path },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, ({ connection_id, path }, { signal }) => operationTool(gateway, oauth, context, connection_id, "read", { path }, { signal }));
+  }, ({ connection_id, path }, { signal }) => operationTool(gateway, oauth, context, connection_id, "read", { path }, { signal, observe: track("read_record", connection_id, { path }) }));
 
   registerTool("validate_collection", {
     title: "Validate an mdbase collection",
     description: "Check the records in one collection against their type definitions and return the validation issues. Optional input is passed to the collection's validation operation. It reports problems only and does not change anything.",
     inputSchema: { connection_id: connectionId, input: object.optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, ({ connection_id, input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "validate", input ?? {}, { signal }));
+  }, ({ connection_id, input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "validate", input ?? {}, { signal, observe: track("validate_collection", connection_id, {}) }));
 
   registerTool("read_type", {
     title: "Read an mdbase type",
@@ -154,9 +157,9 @@ export function createMcpServer(
       path: path.optional()
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-  }, ({ connection_id, ...input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "read_type", input, { signal }));
+  }, ({ connection_id, ...input }, { signal }) => operationTool(gateway, oauth, context, connection_id, "read_type", input, { signal, observe: track("read_type", connection_id, input) }));
 
-  if (context.scopes.includes("mdbase:write")) registerWriteTools(registerTool, context, gateway, oauth, audit);
+  if (context.scopes.includes("mdbase:write")) registerWriteTools(registerTool, context, gateway, oauth, audit, track);
   return server;
 }
 
@@ -170,7 +173,7 @@ function directoryRegistrar(server: McpServer): McpServer["registerTool"] {
   }, handler);
 }
 
-function registerWriteTools(registerTool: McpServer["registerTool"], context: McpAuthContext, gateway: ConnectGateway, oauth: OAuthService, audit: WriteAudit): void {
+function registerWriteTools(registerTool: McpServer["registerTool"], context: McpAuthContext, gateway: ConnectGateway, oauth: OAuthService, audit: WriteAudit, track: CallTracker): void {
   const updateRecordInput = z.object({
     connection_id: connectionId,
     path,
@@ -198,7 +201,8 @@ function registerWriteTools(registerTool: McpServer["registerTool"], context: Mc
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
     gateway, oauth, context, connection_id, "create", input, mutation_id, signal,
-    audit, "create_record", { path: input.path ?? null, toPath: null }
+    audit, "create_record", { path: input.path ?? null, toPath: null },
+    track
   ));
 
   registerTool("update_record", {
@@ -208,7 +212,8 @@ function registerWriteTools(registerTool: McpServer["registerTool"], context: Mc
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
     gateway, oauth, context, connection_id, "update", input, mutation_id, signal,
-    audit, "update_record", { path: input.path, toPath: null }
+    audit, "update_record", { path: input.path, toPath: null },
+    track
   ));
 
   registerTool("delete_record", {
@@ -224,7 +229,8 @@ function registerWriteTools(registerTool: McpServer["registerTool"], context: Mc
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
     gateway, oauth, context, connection_id, "delete", input, mutation_id, signal,
-    audit, "delete_record", { path: input.path, toPath: null }
+    audit, "delete_record", { path: input.path, toPath: null },
+    track
   ));
 
   registerTool("rename_record", {
@@ -242,7 +248,8 @@ function registerWriteTools(registerTool: McpServer["registerTool"], context: Mc
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
     gateway, oauth, context, connection_id, "rename", input, mutation_id, signal,
-    audit, "rename_record", { path: input.from, toPath: input.to }
+    audit, "rename_record", { path: input.from, toPath: input.to },
+    track
   ));
 
   registerTool("create_type", {
@@ -257,7 +264,8 @@ function registerWriteTools(registerTool: McpServer["registerTool"], context: Mc
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
     gateway, oauth, context, connection_id, "create_type", input, mutation_id, signal,
-    audit, "create_type", { path: input.path ?? null, toPath: null }
+    audit, "create_type", { path: input.path ?? null, toPath: null },
+    track
   ));
 
   registerTool("update_type", {
@@ -274,7 +282,8 @@ function registerWriteTools(registerTool: McpServer["registerTool"], context: Mc
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, ({ connection_id, mutation_id, ...input }, { signal }) => mutationOperationTool(
     gateway, oauth, context, connection_id, "update_type", input, mutation_id, signal,
-    audit, "update_type", { path: input.path ?? input.name ?? null, toPath: null }
+    audit, "update_type", { path: input.path ?? input.name ?? null, toPath: null },
+    track
   ));
 }
 
@@ -289,8 +298,10 @@ async function mutationOperationTool(
   signal: AbortSignal,
   audit: WriteAudit,
   tool: WriteTool,
-  paths: { path: string | null; toPath: string | null }
+  paths: { path: string | null; toPath: string | null },
+  track: CallTracker
 ) {
+  const observe = track(tool, connectionId, { path: paths.path, to: paths.toPath });
   const requestId = mutationId ?? randomUUID();
   let auditId: string;
   try {
@@ -304,6 +315,7 @@ async function mutationOperationTool(
       requestId
     });
   } catch {
+    observe({ ok: false, code: "audit_unavailable" });
     return {
       ...toolResult({
         error: {
@@ -320,6 +332,7 @@ async function mutationOperationTool(
     signal,
     requestId,
     mutationReceipt: true,
+    observe,
     onSettled: (settled) => { outcome = settled; }
   });
   // The write has already run: a failed audit update must not replace its receipt.
@@ -342,7 +355,7 @@ async function operationTool(
   connectionId: string,
   operation: CollectionOperation,
   input: unknown,
-  options: { signal?: AbortSignal; requestId?: string; mutationReceipt?: boolean; onSettled?: (outcome: WriteOutcome) => void } = {}
+  options: { signal?: AbortSignal; requestId?: string; mutationReceipt?: boolean; onSettled?: (outcome: WriteOutcome) => void; observe?: CallObserver } = {}
 ) {
   try {
     const value = await gateway.operation(
@@ -355,9 +368,11 @@ async function operationTool(
     if (operation === "changes") {
       const page = value as CollectionChangesPage;
       if (!Array.isArray(page?.events)) throw new GatewayOperationError("invalid_operation_response", "Invalid changes page.");
+      options.observe?.({ ok: true, value });
       return toolResult({ ...page, typed_events: page.events.map(normalizeCollectionChange) });
     }
     options.onSettled?.({ ok: true, revision: revisionOf(value) });
+    options.observe?.({ ok: true, value });
     return toolResult(options.mutationReceipt ? {
       mutation_receipt: {
         request_id: options.requestId,
@@ -366,7 +381,9 @@ async function operationTool(
       outcome: value
     } : value);
   } catch (error) {
-    options.onSettled?.({ ok: false, errorCode: error instanceof GatewayOperationError ? error.code : "operation_failed" });
+    const errorCode = error instanceof GatewayOperationError ? error.code : "operation_failed";
+    options.onSettled?.({ ok: false, errorCode });
+    options.observe?.({ ok: false, code: errorCode });
     // A grant that could not take a Noise key silently: one-click re-approval link.
     if (error instanceof GatewayOperationError && error.code === "reconnect_required") {
       const authorizationUrl = await oauth.createConnectionTicket(context, connectionId).catch(() => null);
@@ -415,4 +432,83 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function revisionOf(value: unknown): string | null {
   const revision = isObject(value) ? value.revision : undefined;
   return typeof revision === "string" ? revision : null;
+}
+
+type CallObserver = (settled: { ok: true; value: unknown } | { ok: false; code: string }) => void;
+type CallTracker = (tool: string, connectionId: string, input: unknown) => CallObserver;
+
+/** Starts the clock for one tool call; the returned observer logs it once settled.
+ * Logging runs after the response is produced, is never awaited by it, and only
+ * keeps metadata: paths and counts, never record bodies or frontmatter. */
+function callTracker(
+  context: McpAuthContext,
+  gateway: ConnectGateway,
+  callLog: CallLog,
+  queryTextCollections: ReadonlySet<string>
+): CallTracker {
+  let collections: Promise<Map<string, string>> | undefined;
+  const collectionOf = async (connectionId: string): Promise<string | null> => {
+    try {
+      collections ??= Promise.resolve(gateway.listConnections(context.connectionSetId))
+        .then((list) => new Map(list.map((connection) => [connection.id, connection.collection_id])));
+      return (await collections).get(connectionId) ?? null;
+    } catch {
+      collections = undefined;
+      return null;
+    }
+  };
+  if (callLog === noCallLog) return () => () => undefined;
+  return (tool, connectionId, input) => {
+    const startedAt = performance.now();
+    let done = false;
+    return (settled) => {
+      if (done) return;
+      done = true;
+      const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+      void (async () => {
+        const collectionId = await collectionOf(connectionId);
+        const fields = settled.ok ? successFields(tool, input, settled.value) : { resultCount: null, paths: inputPaths(input) };
+        await callLog.record({
+          clientId: context.clientId,
+          connectionSetId: context.connectionSetId,
+          connectionId,
+          collectionId,
+          tool,
+          durationMs,
+          outcome: settled.ok ? "ok" : "error",
+          errorCode: settled.ok ? null : settled.code,
+          ...fields,
+          queryText: tool === "query_records" && collectionId !== null && queryTextCollections.has(collectionId)
+            ? whereOf(input)
+            : null,
+          ranking: null
+        });
+      })().catch((error) => {
+        console.error("call log record failed", { tool, message: error instanceof Error ? error.message : String(error) });
+      });
+    };
+  };
+}
+
+function whereOf(input: unknown): string | null {
+  const where = isObject(input) ? input.where : undefined;
+  return typeof where === "string" ? where : null;
+}
+
+function inputPaths(input: unknown): string[] {
+  if (!isObject(input)) return [];
+  return [input.path, input.to].filter((value): value is string => typeof value === "string");
+}
+
+function successFields(tool: string, input: unknown, value: unknown): { resultCount: number | null; paths: string[] } {
+  if (tool === "read_record") return { resultCount: 1, paths: inputPaths(input) };
+  if (tool === "query_records") {
+    const results = isObject(value) && Array.isArray(value.results) ? value.results : null;
+    if (!results) return { resultCount: null, paths: [] };
+    const paths = results.flatMap((row) => (isObject(row) && typeof row.path === "string" ? [row.path] : []));
+    return { resultCount: results.length, paths };
+  }
+  const written = inputPaths(input);
+  if (written.length === 0 && isObject(value) && typeof value.path === "string") written.push(value.path);
+  return { resultCount: null, paths: written };
 }
