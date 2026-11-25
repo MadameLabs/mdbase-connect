@@ -174,16 +174,19 @@ describe("search_records", () => {
     expect((await s2({ query: "reuniao" })).json.ranking_warning).toBe("jev_unavailable");
   });
 
-  it("truncates from the end above 12,000 characters", async () => {
+  it("truncates from the end so the text actually sent stays within 12,000 characters", async () => {
     const big = "reuniao " + "palavra ".repeat(140);
     const rows = Array.from({ length: 20 }, (_, i) => ({ path: `n/n${String(i).padStart(2, "0")}.md`, title: `N ${i}`, body: big }));
-    const { search } = await connect(fakeGateway(rows), { jev: null });
-    const { json, text } = await search({ query: "reuniao", limit: 20 });
+    const { client } = await connect(fakeGateway(rows), { jev: null });
+    const r = await client.callTool({ name: "search_records", arguments: { connection_id: CONN, query: "reuniao", limit: 20 } });
+    const text = (r.content as Array<{ text: string }>)[0].text;
+    const json = JSON.parse(text);
     expect(json.truncated).toBe(true);
     expect(json.results.length).toBeGreaterThan(0);
     expect(json.results.length).toBeLessThan(20);
-    expect(JSON.stringify(json).length).toBeLessThanOrEqual(SEARCH_RESULT_MAX_CHARS);
-    expect(text.length).toBeGreaterThan(0);
+    expect(text.length).toBeLessThanOrEqual(SEARCH_RESULT_MAX_CHARS);
+    expect(text).toBe(JSON.stringify(json));
+    expect((r.structuredContent as { results: unknown[] }).results).toHaveLength(json.results.length);
   });
 
   it("refuses a connection without query, reading nothing", async () => {
@@ -204,7 +207,7 @@ describe("search_records", () => {
     expect(jev.rank).not.toHaveBeenCalled();
   });
 
-  it("starts reading bodies without waiting for the caches", async () => {
+  it("peeks the index list once and never awaits it", async () => {
     const order: string[] = [];
     const gateway = fakeGateway(manyRows(2), ["query"], (_op, input) => order.push(String(input.where).startsWith("file.path in") ? "bodies" : "terms"));
     const indexList = { peek: vi.fn(() => { order.push("peek-indexes"); return null; }) } as unknown as IndexListCache;
@@ -215,6 +218,26 @@ describe("search_records", () => {
     await client.callTool({ name: "search_records", arguments: { connection_id: CONN, query: "reuniao" } });
     expect(order.indexOf("bodies")).toBeGreaterThan(-1);
     expect(order.filter((o) => o === "peek-indexes").length).toBe(1);
+  });
+
+  it("warns when the bodies cannot be read, still returning results", async () => {
+    const gateway = fakeGateway(manyRows(2), ["query"], (_op, input) => {
+      if (String(input.where).startsWith("file.path in")) throw new Error("down");
+    });
+    const { search } = await connect(gateway, { jev: null });
+    const { json, isError } = await search({ query: "reuniao" });
+    expect(isError).toBe(false);
+    expect(json.excerpt_warning).toBe("bodies_unavailable");
+    expect(json.results).toHaveLength(2);
+    expect(json.results[0].excerpt).toBeNull();
+    const ok = await (await connect(fakeGateway(manyRows(2)), { jev: null })).search({ query: "reuniao" });
+    expect(ok.json.excerpt_warning).toBeUndefined();
+  });
+
+  it("describes folder_rule null", async () => {
+    const { client } = await connect(fakeGateway([]));
+    const tool = (await client.listTools()).tools.find((t) => t.name === "search_records");
+    expect(tool?.description).toContain("folder_rule is null when the folder has no rule or rules are not known yet.");
   });
 
   it("logs the query text only for allowed collections, never excerpts", async () => {

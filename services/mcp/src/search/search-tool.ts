@@ -32,6 +32,7 @@ export interface SearchOutput {
   start_here: { path: string; title: string; description: string | null } | null;
   ranking: "jev" | "pre_order";
   ranking_warning?: string;
+  excerpt_warning?: "bodies_unavailable";
   candidates_considered: number;
   candidates_total: number;
   truncated: boolean;
@@ -50,6 +51,11 @@ export interface SearchInput {
   types?: string[];
   folder?: string;
   limit?: number;
+}
+
+/** The text `search_records` sends in `content`. */
+export function serializeSearch(output: SearchOutput): string {
+  return JSON.stringify(output);
 }
 
 function folderOf(path: string): string {
@@ -92,6 +98,7 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
     bodies = await readBodies(gateway, connectionSetId, connectionId, candidates.map((c) => c.path), signal);
   } catch (error) {
     if (signal?.aborted) throw error;
+    output.excerpt_warning = "bodies_unavailable";
   }
   const { long, short } = searchTerms(input.query);
   const terms = [...long, ...short];
@@ -131,9 +138,10 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
       score
     };
   });
-  while (output.results.length > 0 && JSON.stringify(output).length > SEARCH_RESULT_MAX_CHARS) {
-    output.results.pop();
+  // The cap applies to the exact text the tool sends: compact JSON of this object.
+  if (serializeSearch(output).length > SEARCH_RESULT_MAX_CHARS) {
     output.truncated = true;
+    while (output.results.length > 0 && serializeSearch(output).length > SEARCH_RESULT_MAX_CHARS) output.results.pop();
   }
   return output;
 }

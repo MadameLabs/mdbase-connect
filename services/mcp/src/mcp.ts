@@ -10,7 +10,7 @@ import { readGuide } from "./guide.js";
 import { nearestFolderRule, type FolderRulesCache } from "./folder-rules.js";
 import type { IndexListCache } from "./search/indexes.js";
 import type { JevClient } from "./search/jev.js";
-import { DEFAULT_SEARCH_LIMIT, searchRecords } from "./search/search-tool.js";
+import { DEFAULT_SEARCH_LIMIT, searchRecords, serializeSearch } from "./search/search-tool.js";
 import { refuseUnrecordedWrites, type WriteAudit, type WriteOutcome, type WriteTool } from "./write-audit.js";
 
 const connectionId = z.uuid().describe("Opaque connection ID returned by list_connections");
@@ -179,7 +179,7 @@ export function createMcpServer(
 
   registerTool("search_records", {
     title: "Search mdbase records",
-    description: "Search one approved collection by words and meaning. Returns a few records in order of relevance, each with its path, line range, description and the matching excerpt, so you can decide without reading the record. Prefer it to query_records when you do not know the path or the exact field values. It does not change anything.",
+    description: "Search one approved collection by words and meaning. Returns a few records in order of relevance, each with its path, line range, description and the matching excerpt, so you can decide without reading the record. Prefer it to query_records when you do not know the path or the exact field values. It does not change anything. folder_rule is null when the folder has no rule or rules are not known yet.",
     inputSchema: {
       connection_id: connectionId,
       query: z.string().min(1).max(500).describe("What to look for, in plain words"),
@@ -196,7 +196,7 @@ export function createMcpServer(
         connection_id, { query, types, folder, limit }, signal
       );
       observe({ ok: true, value: output });
-      return toolResult(output);
+      return { content: [{ type: "text" as const, text: serializeSearch(output) }], structuredContent: { ...output } };
     } catch (error) {
       return gatewayErrorResult(oauth, context, connection_id, error, observe);
     }
@@ -462,7 +462,7 @@ async function operationTool(
   } catch (error) {
     const errorCode = error instanceof GatewayOperationError ? error.code : "operation_failed";
     options.onSettled?.({ ok: false, errorCode });
-    return gatewayErrorResult(oauth, context, connectionId, error, options.observe, options.mutationReceipt ? options.requestId : undefined, Boolean(options.mutationReceipt));
+    return gatewayErrorResult(oauth, context, connectionId, error, options.observe, options.mutationReceipt ? options.requestId : undefined);
   }
 }
 
@@ -472,8 +472,8 @@ async function gatewayErrorResult(
   connectionId: string,
   error: unknown,
   observe?: CallObserver,
-  requestId?: string,
-  mutationReceipt = false
+  /** Present only for a mutation: the error then carries the request id. */
+  requestId?: string
 ) {
   const errorCode = error instanceof GatewayOperationError ? error.code : "operation_failed";
   observe?.({ ok: false, code: errorCode });
@@ -493,14 +493,14 @@ async function gatewayErrorResult(
           code: error.code,
           message: error.message,
           ...(error.details ? { details: error.details } : {}),
-          ...(mutationReceipt ? { request_id: requestId } : {})
+          ...(requestId !== undefined ? { request_id: requestId } : {})
         }
       }
     : {
         error: {
           code: "operation_failed",
           message: "The collection operation failed.",
-          ...(mutationReceipt ? { request_id: requestId } : {})
+          ...(requestId !== undefined ? { request_id: requestId } : {})
         }
       };
   return {
