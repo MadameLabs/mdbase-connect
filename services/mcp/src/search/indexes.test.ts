@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectGateway } from "../connect.js";
-import { INDEX_BOOST, IndexListCache, MAX_INDEX_OPTIONS } from "./indexes.js";
+import { IndexListCache, MAX_INDEX_OPTIONS } from "./indexes.js";
 
 const CONN = "01911111-1111-7111-8111-111111111111";
 
@@ -20,7 +20,6 @@ const queryCalls = (g: ReturnType<typeof gatewayWith>) => (g.operation.mock.call
 describe("IndexListCache", () => {
   it("exporta as constantes", () => {
     expect(MAX_INDEX_OPTIONS).toBe(255);
-    expect(INDEX_BOOST).toBe(2);
   });
 
   it("monta a lista com fallback de título e descrição null", async () => {

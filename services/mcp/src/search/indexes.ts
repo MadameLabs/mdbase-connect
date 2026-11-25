@@ -1,9 +1,6 @@
 import type { ConnectGateway } from "../connect.js";
 
 export const MAX_INDEX_OPTIONS = 255;
-/** Applied by the search's final ordering (not here): a candidate under the
- * chosen index's folder gets this added to its score. */
-export const INDEX_BOOST = 2;
 
 export interface IndexOption {
   path: string;

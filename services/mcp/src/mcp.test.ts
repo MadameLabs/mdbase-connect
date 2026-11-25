@@ -25,7 +25,7 @@ async function connect(scopes: Parameters<typeof createMcpServer>[0]["scopes"]) 
 describe("MCP server metadata", () => {
   it("gives every tool explicit hints and a description of its behaviour", async () => {
     const { tools } = await connect(["mdbase:read", "mdbase:write"]);
-    expect(tools.length).toBe(16);
+    expect(tools.length).toBe(17);
     for (const tool of tools) {
       expect(typeof tool.annotations?.readOnlyHint, tool.name).toBe("boolean");
       expect(typeof tool.annotations?.destructiveHint, tool.name).toBe("boolean");
@@ -69,6 +69,7 @@ describe("MCP server metadata", () => {
       list_changes: read,
       query_records: read,
       release_query_cursor: read,
+      search_records: read,
       read_record: read,
       validate_collection: read,
       read_type: read,

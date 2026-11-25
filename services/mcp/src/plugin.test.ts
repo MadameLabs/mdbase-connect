@@ -10,7 +10,7 @@ import type { OAuthService } from "./oauth.js";
 
 const repository = new URL("../../../", import.meta.url);
 const plugin = new URL("plugins/mdbase/", repository);
-const TOOL_NAME = /`((?:list|add|reconnect|describe|query|release|read|validate|create|update|delete|rename)_[a-z_]+)`/g;
+const TOOL_NAME = /`((?:list|add|reconnect|describe|query|search|release|read|validate|create|update|delete|rename)_[a-z_]+)`/g;
 
 describe("mdbase ChatGPT plugin", () => {
   it("names exactly the tools the gateway registers", async () => {
