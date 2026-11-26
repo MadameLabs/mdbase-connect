@@ -26,7 +26,7 @@ function fakeGateway(rows: Row[], operations: string[] = ["query", "read"], onOp
     return {
       results: rows.map((r) => ({
         path: r.path, types: ["note"], revision: "r1",
-        values: { ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}) }
+        frontmatter: { ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}) }
       }))
     };
   });
