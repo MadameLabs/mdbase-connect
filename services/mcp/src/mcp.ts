@@ -10,6 +10,7 @@ import { readGuide } from "./guide.js";
 import { nearestFolderRule, type FolderRulesCache } from "./folder-rules.js";
 import type { IndexListCache } from "./search/indexes.js";
 import type { JevClient } from "./search/jev.js";
+import type { VectorRegistry } from "./search/vector-store.js";
 import { DEFAULT_SEARCH_LIMIT, searchRecords, serializeSearch } from "./search/search-tool.js";
 import { refuseUnrecordedWrites, type WriteAudit, type WriteOutcome, type WriteTool } from "./write-audit.js";
 
@@ -35,7 +36,7 @@ export function createMcpServer(
   gateway: ConnectGateway,
   oauth: OAuthService,
   audit: WriteAudit = refuseUnrecordedWrites,
-  options: { callLog?: CallLog; queryTextCollections?: ReadonlySet<string>; folderRules?: FolderRulesCache; jev?: JevClient | null; indexList?: IndexListCache } = {}
+  options: { callLog?: CallLog; queryTextCollections?: ReadonlySet<string>; folderRules?: FolderRulesCache; jev?: JevClient | null; indexList?: IndexListCache; vectors?: VectorRegistry } = {}
 ): McpServer {
   const track = callTracker(context, gateway, options.callLog ?? noCallLog, options.queryTextCollections ?? new Set());
   const server = new McpServer(

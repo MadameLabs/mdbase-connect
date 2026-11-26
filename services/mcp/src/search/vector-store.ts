@@ -89,6 +89,16 @@ export class VectorIndex {
     return new Set((this.notes.get(path) ?? []).map((u) => u.textHash));
   }
 
+  /** The stored vectors of the note, so the indexer can reuse those whose text did not change. */
+  unitsOf(path: string): StoredUnit[] {
+    return [...(this.notes.get(path) ?? [])];
+  }
+
+  /** Paths of every indexed note. */
+  paths(): string[] {
+    return [...this.notes.keys()];
+  }
+
   /** Number of stored vectors across all notes. */
   size(): number {
     return this.vectorCount;

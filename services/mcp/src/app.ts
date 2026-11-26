@@ -12,7 +12,10 @@ import { ConnectGateway } from "./connect.js";
 import { createPgCallLog } from "./call-log.js";
 import { FolderRulesCache } from "./folder-rules.js";
 import { IndexListCache } from "./search/indexes.js";
+import { createEmbeddingClient } from "./search/embeddings.js";
+import { EmbeddingIndexer } from "./search/indexer.js";
 import { createJevClient } from "./search/jev.js";
+import { PgVectorStore, VectorRegistry } from "./search/vector-store.js";
 import { createMcpServer } from "./mcp.js";
 import { MCP_SCOPES, OAuthError, OAuthService } from "./oauth.js";
 import { verifyMasterKey } from "./security.js";
@@ -83,6 +86,37 @@ export async function buildApp(options: BuildOptions) {
   const callLogPurge = setInterval(() => void purgeCallLog(), 24 * 60 * 60_000);
   callLogPurge.unref();
   app.addHook("onClose", async () => clearInterval(callLogPurge));
+  // Vectors of each collection with embeddings enabled; the search tool reads them from here.
+  const vectors = new VectorRegistry();
+  if (config.embedding) {
+    const embedding = config.embedding;
+    const client = createEmbeddingClient(embedding);
+    for (const target of embedding.collections) {
+      const store = new PgVectorStore(options.db, target.collectionId, embedding.model);
+      const indexer = new EmbeddingIndexer({ gateway, client, store, registry: vectors, target, log: app.log });
+      const abort = new AbortController();
+      let loaded = false;
+      const cycle = async () => {
+        try {
+          if (!loaded) {
+            // Load the stored vectors first, so a restart does not re-embed the collection.
+            vectors.set(target.collectionId, await store.load());
+            loaded = true;
+          }
+          await indexer.runOnce(abort.signal);
+        } catch (error) {
+          app.log.error({ err: error, collectionId: target.collectionId }, "Embedding index cycle failed");
+        }
+      };
+      void cycle();
+      const embeddingCycle = setInterval(() => void cycle(), embedding.intervalMs);
+      embeddingCycle.unref();
+      app.addHook("onClose", async () => {
+        clearInterval(embeddingCycle);
+        abort.abort();
+      });
+    }
+  }
   const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource/mcp`;
 
   await app.register(formbody);
@@ -243,6 +277,7 @@ export async function buildApp(options: BuildOptions) {
       folderRules,
       indexList,
       jev,
+      vectors,
       queryTextCollections: config.queryTextCollections
     });
     const transport = new StreamableHTTPServerTransport({
