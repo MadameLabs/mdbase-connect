@@ -10,7 +10,7 @@ function fake(byTerm: Record<string, Row[]>, more: string[] = [], restricted: Re
     const term = Object.keys(byTerm).find((t) => input.where.includes(`contains("${t}")`) || input.where.includes(`])${t}([`));
     const isBody = input.where.includes("file.body");
     const source = term && more.includes(term) && !isBody ? restricted[term] ?? [] : term ? byTerm[term] : [];
-    const results = source.map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", values: r.frontmatter ?? {} }));
+    const results = source.map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", frontmatter: r.frontmatter ?? {} }));
     return { results, meta: { has_more: term !== undefined && more.includes(term) && isBody } };
   });
   return { gateway: { operation } as unknown as ConnectGateway, operation };
@@ -73,8 +73,10 @@ describe("gatherCandidates", () => {
     expect(r.candidates.map((c) => c.path).sort()).toEqual(["x-pf.md", "y.md"]);
     const input = operation.mock.calls[0][3] as Record<string, unknown>;
     expect(input.limit).toBe(300);
-    expect(input.output).toBe("metadata");
-    expect(input.select).toEqual(["title", "description"]);
+    // A consulta comum: a autoridade hospedada recusa `output: "metadata"` com condição
+    // no corpo (query_budget_exceeded), mesmo com poucos resultados.
+    expect(input).not.toHaveProperty("output");
+    expect(input).not.toHaveProperty("select");
     expect(input).not.toHaveProperty("include_body");
     expect(input).not.toHaveProperty("types");
   });

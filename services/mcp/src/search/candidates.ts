@@ -118,7 +118,9 @@ export async function gatherCandidates(
   const run = async (term: string, isShort: boolean, withBody: boolean) => {
     const expression = termExpression(term, withBody, isShort);
     const where = folderCondition ? `(${expression}) && ${folderCondition}` : expression;
-    const input: Record<string, unknown> = { where, limit: QUERY_LIMIT, output: "metadata", select: ["title", "description"] };
+    // Plain query, not `output: "metadata"`: the hosted authority refuses metadata output
+    // with a body condition (query_budget_exceeded) even for a handful of matches.
+    const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
     if (filters.types && filters.types.length > 0) input.types = filters.types;
     const page = (await gateway.operation(connectionSetId, connectionId, "query", input, { signal })) as
       { results?: unknown; meta?: { has_more?: unknown; cursor?: unknown } | null } | null;
@@ -144,10 +146,10 @@ export async function gatherCandidates(
   for (const { term, whole, body, results } of pages) {
     if (!Array.isArray(results)) continue;
     for (const item of results) {
-      const r = item as { path?: unknown; types?: unknown; revision?: unknown; values?: { title?: unknown; description?: unknown } | null };
+      const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
       if (typeof r?.path !== "string") continue;
-      const title = asText(r.values?.title);
-      const description = asText(r.values?.description);
+      const title = asText(r.frontmatter?.title);
+      const description = asText(r.frontmatter?.description);
       let row = rows.get(r.path);
       if (!row) {
         row = {
