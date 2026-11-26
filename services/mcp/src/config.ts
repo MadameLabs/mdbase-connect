@@ -10,7 +10,7 @@ export interface McpRuntimeConfig {
   trustProxy: boolean;
   callLogRetentionDays: number;
   queryTextCollections: ReadonlySet<string>;
-  jev: { apiKey: string; model: string } | null;
+  jev: { apiKey: string; model: string; endpoint: string } | null;
 }
 
 export function runtimeConfigFromEnv(env: NodeJS.ProcessEnv): McpRuntimeConfig {
@@ -47,7 +47,25 @@ export function runtimeConfigFromEnv(env: NodeJS.ProcessEnv): McpRuntimeConfig {
 function jevConfig(env: NodeJS.ProcessEnv): McpRuntimeConfig["jev"] {
   const apiKey = env.MDBASE_MCP_TYPESAFE_API_KEY?.trim();
   if (!apiKey) return null;
-  return { apiKey, model: env.MDBASE_MCP_JEV_MODEL?.trim() || "jev-1.14.0" };
+  return {
+    apiKey,
+    model: env.MDBASE_MCP_JEV_MODEL?.trim() || "jev-1.14.0",
+    endpoint: jevEndpoint(env.MDBASE_MCP_JEV_ENDPOINT?.trim() || "https://api.typesafe.ai/v1/systemone")
+  };
+}
+
+// The key goes to this URL as a bearer token, so only plain HTTPS URLs without embedded credentials are accepted.
+function jevEndpoint(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("MDBASE_MCP_JEV_ENDPOINT must be a URL.");
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error("MDBASE_MCP_JEV_ENDPOINT must be an HTTPS URL without credentials.");
+  }
+  return url.href;
 }
 
 function origin(value: string, name: string): string {

@@ -4,7 +4,7 @@ import { JevError, createJevClient, type JevRankInput } from "./jev.js";
 import { ANY_INDEX_INSTRUCTIONS, CANDIDATE_CRITERIA, CANDIDATE_INSTRUCTIONS, PICK_INDEX_INSTRUCTIONS } from "./jev-questions.js";
 
 const KEY = "sk-secret-key-123";
-const config = { apiKey: KEY, model: "jev-1.14.0" };
+const config = { apiKey: KEY, model: "jev-1.14.0", endpoint: "https://api.typesafe.ai/v1/systemone" };
 
 const input: JevRankInput = {
   query: "fatura do cartão",
@@ -37,6 +37,11 @@ function fakeFetch(response: () => Response | Promise<Response>) {
 }
 
 describe("createJevClient", () => {
+  it("manda para o endpoint configurado", async () => {
+    const f = fakeFetch(() => reply(200, goodBody));
+    await createJevClient({ ...config, endpoint: "https://openrouter.ai/api/v1/systemone" }, f as unknown as typeof fetch).rank(input);
+    expect(f.mock.calls[0]![0]).toBe("https://openrouter.ai/api/v1/systemone");
+  });
   it("faz uma requisição só, com um Noul por candidata, o Choice e o Noul dos indexes", async () => {
     const f = fakeFetch(() => reply(200, goodBody));
     await createJevClient(config, f as unknown as typeof fetch).rank(input);
@@ -170,7 +175,18 @@ describe("configuração do Jev", () => {
     expect(runtimeConfigFromEnv({ ...base, MDBASE_MCP_TYPESAFE_API_KEY: "  " }).jev).toBeNull();
   });
   it("com chave, usa o modelo padrão ou o configurado", () => {
-    expect(runtimeConfigFromEnv({ ...base, MDBASE_MCP_TYPESAFE_API_KEY: "k1" }).jev).toEqual({ apiKey: "k1", model: "jev-1.14.0" });
-    expect(runtimeConfigFromEnv({ ...base, MDBASE_MCP_TYPESAFE_API_KEY: "k1", MDBASE_MCP_JEV_MODEL: "jev-latest" }).jev).toEqual({ apiKey: "k1", model: "jev-latest" });
+    const typesafe = "https://api.typesafe.ai/v1/systemone";
+    expect(runtimeConfigFromEnv({ ...base, MDBASE_MCP_TYPESAFE_API_KEY: "k1" }).jev).toEqual({ apiKey: "k1", model: "jev-1.14.0", endpoint: typesafe });
+    expect(runtimeConfigFromEnv({ ...base, MDBASE_MCP_TYPESAFE_API_KEY: "k1", MDBASE_MCP_JEV_MODEL: "jev-latest" }).jev).toEqual({ apiKey: "k1", model: "jev-latest", endpoint: typesafe });
+  });
+  it("aceita outro endpoint HTTPS, como o do OpenRouter", () => {
+    const env = { ...base, MDBASE_MCP_TYPESAFE_API_KEY: "k1", MDBASE_MCP_JEV_MODEL: "typesafe/jev-1.14", MDBASE_MCP_JEV_ENDPOINT: " https://openrouter.ai/api/v1/systemone " };
+    expect(runtimeConfigFromEnv(env).jev).toEqual({ apiKey: "k1", model: "typesafe/jev-1.14", endpoint: "https://openrouter.ai/api/v1/systemone" });
+  });
+  it("recusa endpoint sem HTTPS ou com credencial", () => {
+    const env = { ...base, MDBASE_MCP_TYPESAFE_API_KEY: "k1" };
+    expect(() => runtimeConfigFromEnv({ ...env, MDBASE_MCP_JEV_ENDPOINT: "http://openrouter.ai/api/v1/systemone" })).toThrow(/MDBASE_MCP_JEV_ENDPOINT/);
+    expect(() => runtimeConfigFromEnv({ ...env, MDBASE_MCP_JEV_ENDPOINT: "https://u:p@openrouter.ai/api/v1/systemone" })).toThrow(/MDBASE_MCP_JEV_ENDPOINT/);
+    expect(() => runtimeConfigFromEnv({ ...env, MDBASE_MCP_JEV_ENDPOINT: "não é URL" })).toThrow(/MDBASE_MCP_JEV_ENDPOINT/);
   });
 });
