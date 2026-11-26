@@ -60,18 +60,34 @@ function boundaryPattern(term: string): string {
   return `(^|${BOUNDARY_CLASS})${term}(${BOUNDARY_CLASS}|$)`;
 }
 
-function termExpression(term: string, withBody: boolean, whole: boolean): string {
-  const test = (field: string) => {
-    const lit = celString(whole ? boundaryPattern(term) : term);
-    return whole ? `${field}.lower().matches(${lit})` : `${field}.lower().contains(${lit})`;
-  };
-  const parts = [
-    `(has(raw.title) && ${test("raw.title")})`,
-    `(has(raw.description) && ${test("raw.description")})`,
-    test("file.path")
-  ];
-  if (withBody) parts.push(test("file.body"));
-  return parts.join(" || ");
+function test(field: string, term: string, whole: boolean): string {
+  const lit = celString(whole ? boundaryPattern(term) : term);
+  return whole ? `${field}.lower().matches(${lit})` : `${field}.lower().contains(${lit})`;
+}
+
+/** The body query: every long term in OR, nothing else, so the runtime answers it
+ * from its FTS5 body index (any other clause in the expression makes it a scan). */
+export function bodyExpression(long: string[]): string {
+  return long.map((t) => `file.body.lower().contains(${celString(t)})`).join(" || ");
+}
+
+/** Title, description and path for every term in one expression: long terms by
+ * substring, short ones as whole words. */
+export function metaExpression(long: string[], short: string[]): string {
+  const one = (term: string, whole: boolean) =>
+    [
+      `(has(raw.title) && ${test("raw.title", term, whole)})`,
+      `(has(raw.description) && ${test("raw.description", term, whole)})`,
+      test("file.path", term, whole)
+    ].join(" || ");
+  return [...long.map((t) => one(t, false)), ...short.map((t) => one(t, true))].join(" || ");
+}
+
+/** A folder as a path range ("0" follows "/"), which the body index accepts where
+ * `startsWith` would turn the body query into a scan. */
+export function folderRange(folder: string): string {
+  const base = folder.replace(/\/+$/, "");
+  return `(file.path >= ${celString(`${base}/`)} && file.path < ${celString(`${base}0`)})`;
 }
 
 type Field = keyof typeof PRE_SCORE_WEIGHTS;
@@ -86,19 +102,21 @@ interface Row {
   matched: Map<string, Set<Field>>;
 }
 
-function matchedFields(term: string, whole: boolean, body: boolean, path: string, title: string | null, description: string | null): Set<Field> {
+function matchedFields(term: string, whole: boolean, path: string, title: string | null, description: string | null): Set<Field> {
   const re = whole ? new RegExp(boundaryPattern(term)) : null;
   const has = (text: string) => (re ? re.test(text.toLowerCase()) : text.toLowerCase().includes(term));
   const fields = new Set<Field>();
   if (title !== null && has(title)) fields.add("title");
   if (description !== null && has(description)) fields.add("description");
   if (has(path)) fields.add("path");
-  if (fields.size === 0 && body) fields.add("body");
   return fields;
 }
 
 const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
+/** Candidates from two queries sent together: the body query (first page of the FTS5
+ * index only, in path order; its cursor is ignored) and the title/description/path
+ * query. A body hit is credited once, without knowing which term matched. */
 export async function gatherCandidates(
   gateway: ConnectGateway,
   connectionSetId: string,
@@ -108,62 +126,58 @@ export async function gatherCandidates(
   signal?: AbortSignal
 ): Promise<{ candidates: Candidate[]; total: number }> {
   const { long, short } = searchTerms(query);
-  const folderCondition = filters.folder
-    ? `file.path.startsWith(${celString(filters.folder.endsWith("/") ? filters.folder : `${filters.folder}/`)})`
-    : null;
-  const jobs = [...long.map((term) => ({ term, short: false })), ...short.map((term) => ({ term, short: true }))];
+  if (long.length === 0 && short.length === 0) return { candidates: [], total: 0 };
 
-  if (jobs.length === 0) return { candidates: [], total: 0 };
-
-  const run = async (term: string, isShort: boolean, withBody: boolean) => {
-    const expression = termExpression(term, withBody, isShort);
-    const where = folderCondition ? `(${expression}) && ${folderCondition}` : expression;
+  const run = async (where: string) => {
     // Plain query, not `output: "metadata"`: the hosted authority refuses metadata output
     // with a body condition (query_budget_exceeded) even for a handful of matches.
     const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
     if (filters.types && filters.types.length > 0) input.types = filters.types;
     const page = (await gateway.operation(connectionSetId, connectionId, "query", input, { signal })) as
-      { results?: unknown; meta?: { has_more?: unknown; cursor?: unknown } | null } | null;
-    const more = page?.meta?.has_more === true || (typeof page?.meta?.cursor === "string" && page.meta.cursor !== "");
-    return { results: page?.results, more };
+      { results?: unknown } | null;
+    return Array.isArray(page?.results) ? page.results : [];
   };
+  const meta = metaExpression(long, short);
+  const metaWhere = filters.folder
+    ? `(${meta}) && file.path.startsWith(${celString(filters.folder.endsWith("/") ? filters.folder : `${filters.folder}/`)})`
+    : meta;
+  const bodyWhere = long.length === 0 ? null : filters.folder ? `${bodyExpression(long)} && ${folderRange(filters.folder)}` : bodyExpression(long);
+  const [metaResults, bodyResults] = await Promise.all([run(metaWhere), bodyWhere === null ? Promise.resolve([]) : run(bodyWhere)]);
 
-  const pages = await Promise.all(
-    jobs.map(async ({ term, short: isShort }) => {
-      let page = await run(term, isShort, !isShort);
-      let body = !isShort;
-      // A term with more matches than one page is common: the body clause would only
-      // add noise, so ask again over title, description and path alone.
-      if (!isShort && page.more) {
-        page = await run(term, false, false);
-        body = false;
-      }
-      return { term, whole: isShort, body, results: page.results };
-    })
-  );
-
-  const rows = new Map<string, Row>();
-  for (const { term, whole, body, results } of pages) {
-    if (!Array.isArray(results)) continue;
-    for (const item of results) {
-      const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
-      if (typeof r?.path !== "string") continue;
-      const title = asText(r.frontmatter?.title);
-      const description = asText(r.frontmatter?.description);
-      let row = rows.get(r.path);
-      if (!row) {
-        row = {
-          path: r.path,
-          title,
-          description,
-          types: Array.isArray(r.types) ? r.types.filter((t): t is string => typeof t === "string") : [],
-          revision: typeof r.revision === "string" ? r.revision : "",
-          matched: new Map()
-        };
-        rows.set(r.path, row);
-      }
-      row.matched.set(term, matchedFields(term, whole, body, r.path, row.title, row.description));
+  const rows = new Map<string, Row & { body: boolean }>();
+  const rowFor = (item: unknown) => {
+    const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
+    if (typeof r?.path !== "string") return null;
+    let row = rows.get(r.path);
+    if (!row) {
+      row = {
+        path: r.path,
+        title: asText(r.frontmatter?.title),
+        description: asText(r.frontmatter?.description),
+        types: Array.isArray(r.types) ? r.types.filter((t): t is string => typeof t === "string") : [],
+        revision: typeof r.revision === "string" ? r.revision : "",
+        matched: new Map(),
+        body: false
+      };
+      rows.set(r.path, row);
     }
+    return row;
+  };
+  for (const item of metaResults) {
+    const row = rowFor(item);
+    if (!row) continue;
+    for (const [term, whole] of [...long.map((t) => [t, false] as const), ...short.map((t) => [t, true] as const)]) {
+      const fields = matchedFields(term, whole, row.path, row.title, row.description);
+      if (fields.size > 0) row.matched.set(term, fields);
+    }
+  }
+  for (const item of bodyResults) {
+    const row = rowFor(item);
+    if (row) row.body = true;
+  }
+  for (const row of rows.values()) {
+    // Credit the body once, unless every long term already matched outside it.
+    if (row.body && !long.every((t) => row.matched.has(t))) row.matched.set("<body>", new Set<Field>(["body"]));
   }
 
   const candidates: Candidate[] = [];
