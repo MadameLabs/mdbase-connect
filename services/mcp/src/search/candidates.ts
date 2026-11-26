@@ -200,8 +200,9 @@ export interface ExactPath {
 
 /** Notes that hold the exact terms: one body query per long term (3 letters or more, through
  * the index, following its cursor, nothing when common) and one title/description/path query
- * with every term. A term whose body is not back by `deadlineMs` goes to `dropped` with its
- * partial results discarded; the other terms still return. The title query is not raced. */
+ * with every term. Both run under `deadlineMs`: a late body drops its long term, and a late
+ * title/description/path query drops every short term; late results are discarded, and the rest
+ * still return. */
 export async function exactTermCandidates(
   gateway: ConnectGateway,
   connectionSetId: string,
@@ -210,15 +211,18 @@ export async function exactTermCandidates(
   filters: Filters,
   options: { deadlineMs: number; signal?: AbortSignal }
 ): Promise<{ paths: Map<string, ExactPath>; dropped: string[] }> {
-  const kept = terms.slice(0, MAX_EXACT_TERMS);
+  // Lowercased, with punctuation at the ends trimmed; empties and repeats go before the cap.
+  const normalized = terms.map((t) => t.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""));
+  const kept = [...new Set(normalized.filter((t) => t !== ""))].slice(0, MAX_EXACT_TERMS);
   const paths = new Map<string, ExactPath>();
   if (kept.length === 0) return { paths, dropped: [] };
   const longTerms = kept.filter((t) => Array.from(t).length >= LONG_TERM_MIN);
   const shortTerms = kept.filter((t) => Array.from(t).length < LONG_TERM_MIN);
   const { run, bodyOf } = queryReader(gateway, connectionSetId, connectionId, filters, options.signal);
-  const metaQuery = run(metaWhereOf(metaExpression(longTerms, shortTerms), filters.folder));
+  // The title/description/path query is the only source for short terms, so it runs under the same deadline.
+  const metaQuery = withinDeadline(run(metaWhereOf(metaExpression(longTerms, shortTerms), filters.folder)), options.deadlineMs);
   const bodyQueries = longTerms.map((term) => withinDeadline(bodyOf(bodyWhereOf(term, filters.folder)), options.deadlineMs));
-  const [metaPage, ...bodies] = await Promise.all([metaQuery, ...bodyQueries]);
+  const [meta, ...bodies] = await Promise.all([metaQuery, ...bodyQueries]);
 
   const add = (item: unknown) => {
     const stored = storedOf(item);
@@ -226,12 +230,16 @@ export async function exactTermCandidates(
       paths.set(stored.path, { title: stored.title, description: stored.description, types: stored.types, revision: stored.revision });
     }
   };
-  metaPage.results.forEach(add);
-  const dropped: string[] = [];
-  bodies.forEach((body, i) => {
-    if (!body.done) dropped.push(longTerms[i]);
-    else if (body.value !== null) body.value.forEach(add);
+  // A late query's results are discarded: a late meta query drops every short term, a late body drops its long term.
+  if (meta.done) meta.value.results.forEach(add);
+  const bodyByTerm = new Map(longTerms.map((term, i) => [term, bodies[i]]));
+  const dropped = kept.filter((term) => {
+    const body = bodyByTerm.get(term);
+    return body ? !body.done : !meta.done;
   });
+  for (const body of bodies) {
+    if (body.done && body.value !== null) body.value.forEach(add);
+  }
   return { paths, dropped };
 }
 

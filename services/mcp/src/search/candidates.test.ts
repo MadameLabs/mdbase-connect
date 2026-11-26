@@ -290,6 +290,44 @@ describe("exactTermCandidates", () => {
       vi.useRealTimers();
     }
   });
+
+  it("consulta de título, descrição e caminho travada vai para dropped, com os termos curtos; o corpo dos longos volta", async () => {
+    vi.useFakeTimers();
+    try {
+      const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
+        if (input.where === 'file.body.lower().contains("sudo")') {
+          return { results: [{ path: "a.md", types: [], revision: "r", frontmatter: {} }], meta: { has_more: false } };
+        }
+        if (input.where.includes("raw.title")) return new Promise<never>(() => {});
+        return { results: [], meta: { has_more: false } };
+      });
+      const gateway = { operation } as unknown as ConnectGateway;
+      const pending = exactTermCandidates(gateway, "s", "c", ["sudo", "pf"], {}, { deadlineMs: 1500 });
+      await vi.advanceTimersByTimeAsync(1500);
+      const r = await pending;
+      expect(r.dropped).toEqual(["pf"]);
+      expect([...r.paths.keys()]).toEqual(["a.md"]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("normaliza termos: minúsculas, pontuação nas pontas fora", async () => {
+    const { gateway, operation } = fake({});
+    await exactTermCandidates(gateway, "s", "c", ["Sudo.", "PF"], {}, { deadlineMs: 1500 });
+    expect(bodyWheres(operation)).toEqual(['file.body.lower().contains("sudo")']);
+    const meta = metaWhere(operation) as string;
+    expect(meta).toContain('raw.title.lower().contains("sudo")');
+    expect(meta).toContain('file.path.lower().matches("(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)")');
+  });
+
+  it("descarta vazios e repetidos antes do teto de 4 termos", async () => {
+    const { gateway, operation } = fake({});
+    await exactTermCandidates(gateway, "s", "c", ["-", "aaa", "", "bbb!", "bbb", "ccc", "ddd", "eee"], {}, { deadlineMs: 1500 });
+    expect(bodyWheres(operation).map((w) => BODY_RE.exec(w)?.[1]).sort()).toEqual(["aaa", "bbb", "ccc", "ddd"]);
+    expect(metaWhere(operation)).not.toContain('contains("")');
+  });
 });
 
 describe("reserva e prazo", () => {
