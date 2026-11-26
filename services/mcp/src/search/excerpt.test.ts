@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectGateway } from "../connect.js";
-import { EXCERPT_MAX_CHARS, bestExcerpt, readBodies } from "./excerpt.js";
+import { EXCERPT_MAX_CHARS, bestExcerpt, excerptAt, readBodies, readRecords } from "./excerpt.js";
 
 describe("bestExcerpt", () => {
   it("escolhe a seção com o termo, com título e linhas corretas", () => {
@@ -100,5 +100,32 @@ describe("readBodies", () => {
   it("propaga erro do gateway", async () => {
     const gateway = { operation: vi.fn(async () => { throw new Error("falhou"); }) } as unknown as ConnectGateway;
     await expect(readBodies(gateway, "s", "c", ["a.md"])).rejects.toThrow("falhou");
+  });
+});
+
+describe("excerptAt", () => {
+  it("excerptAt devolve as linhas pedidas", () => {
+    const e = excerptAt("a\nb\nc\nd", 2, 3);
+    expect(e).toMatchObject({ text: "b\nc", lineStart: 2, lineEnd: 3 });
+  });
+  it("conta linhas como os vetores, com CRLF, e acha o cabeçalho da seção", () => {
+    const e = excerptAt("# Um\r\nx\r\n## Dois\r\ny\r\nz", 4, 5);
+    expect(e).toMatchObject({ text: "y\nz", lineStart: 4, lineEnd: 5, heading: "Dois" });
+  });
+  it("limita a faixa ao tamanho do corpo", () => {
+    const e = excerptAt("a\nb", 2, 9);
+    expect(e).toMatchObject({ text: "b", lineStart: 2, lineEnd: 2 });
+  });
+});
+
+describe("readRecords", () => {
+  it("devolve corpo e frontmatter da mesma consulta", async () => {
+    const operation = vi.fn(async () => ({ results: [{ path: "a.md", body: "x", frontmatter: { title: "A" } }, { path: "b.md", body: "y" }, { path: "c.md" }] }));
+    const gateway = { operation } as unknown as ConnectGateway;
+    const map = await readRecords(gateway, "s", "c", ["a.md", "b.md", "c.md"]);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(map.get("a.md")).toEqual({ body: "x", frontmatter: { title: "A" } });
+    expect(map.get("b.md")).toEqual({ body: "y", frontmatter: {} });
+    expect(map.has("c.md")).toBe(false);
   });
 });

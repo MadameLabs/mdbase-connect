@@ -1,9 +1,11 @@
 import { GatewayOperationError, type ConnectGateway } from "../connect.js";
 import { nearestFolderRule, type FolderRulesCache } from "../folder-rules.js";
-import { gatherCandidates, searchTerms, type Candidate } from "./candidates.js";
-import { bestExcerpt, readBodies, type Excerpt } from "./excerpt.js";
+import { EXACT_TERMS_DEADLINE_MS, MAX_CANDIDATES, celString, exactTermCandidates, gatherCandidates, searchTerms, type Candidate, type ExactPath } from "./candidates.js";
+import type { EmbeddingClient } from "./embeddings.js";
+import { bestExcerpt, excerptAt, readRecords, type Excerpt, type NoteRecord } from "./excerpt.js";
 import type { IndexListCache, IndexOption } from "./indexes.js";
 import { JevError, type JevClient, type JevRankOutput } from "./jev.js";
+import type { NearHit, VectorIndex, VectorRegistry } from "./vector-store.js";
 
 /** The whole response; above this, results are dropped from the end. */
 export const SEARCH_RESULT_MAX_CHARS = 12_000;
@@ -14,6 +16,21 @@ export const INDEX_MIN_PROBABILITY = 0.7;
 /** Added to the Jev relevance of candidates under the chosen index's folder, for ordering only. */
 export const JEV_INDEX_BONUS = 0.1;
 export const DEFAULT_SEARCH_LIMIT = 8;
+/** Linked records listed per result. */
+export const MAX_RELATED = 5;
+
+export interface RelatedRecord {
+  path: string;
+  title: string;
+  description: string | null;
+}
+
+export interface Validity {
+  type: string | null;
+  status: string | null;
+  date: string | null;
+  archived: boolean;
+}
 
 export interface SearchResult {
   path: string;
@@ -25,12 +42,15 @@ export interface SearchResult {
   heading: string | null;
   folder_rule: string | null;
   score: number;
+  related: RelatedRecord[];
+  validity: Validity;
 }
 
 export interface SearchOutput {
   results: SearchResult[];
   start_here: { path: string; title: string; description: string | null } | null;
   ranking: "jev" | "pre_order";
+  /** A Jev error code, "semantic_unavailable" or "terms_timeout". */
   ranking_warning?: string;
   excerpt_warning?: "bodies_unavailable";
   candidates_considered: number;
@@ -44,10 +64,14 @@ export interface SearchDeps {
   jev?: JevClient | null;
   indexList?: Pick<IndexListCache, "peek">;
   folderRules?: Pick<FolderRulesCache, "peek">;
+  embedding?: EmbeddingClient | null;
+  vectors?: VectorRegistry;
 }
 
 export interface SearchInput {
   query: string;
+  /** Exact names to find literally, besides the meaning of the query. */
+  terms?: string[];
   types?: string[];
   folder?: string;
   limit?: number;
@@ -72,6 +96,132 @@ function warningOf(error: unknown): string {
   return error instanceof JevError ? error.code : "jev_unavailable";
 }
 
+const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+/** The note's types: the `types` list (or string), else `type`, else what the candidate already knows. */
+function typesOf(frontmatter: Record<string, unknown>, fallback: string[]): string[] {
+  const raw = frontmatter.types ?? frontmatter.type;
+  const list = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+  const types = list.filter((t): t is string => typeof t === "string");
+  return types.length > 0 ? types : fallback;
+}
+
+function validityOf(path: string, frontmatter: Record<string, unknown>, fallbackTypes: string[]): Validity {
+  const types = typesOf(frontmatter, fallbackTypes);
+  let date: string | null = null;
+  let latest = Number.NEGATIVE_INFINITY;
+  for (const key of ["modified", "dateModified", "updated", "created"]) {
+    const value = asText(frontmatter[key]);
+    const time = value === null ? Number.NaN : Date.parse(value);
+    if (!Number.isNaN(time) && time > latest) {
+      latest = time;
+      date = value;
+    }
+  }
+  return {
+    type: types[0] ?? null,
+    status: asText(frontmatter.status),
+    date,
+    archived: types.includes("arquivo") || path.includes("99-arquivo/")
+  };
+}
+
+/** The file name a wikilink or plain related value points to: no brackets, alias, heading, folder or `.md`. */
+function linkStem(raw: string): string {
+  const inner = raw.replace(/^\s*\[\[/, "").replace(/\]\]\s*$/, "");
+  const target = inner.split("|")[0].split("#")[0].trim();
+  const name = target.split("/").pop() ?? target;
+  return name.endsWith(".md") ? name.slice(0, -3) : name;
+}
+
+/** Stems of the `related` values first, then of every wikilink elsewhere in the frontmatter. */
+function linkStems(frontmatter: Record<string, unknown>): string[] {
+  const stems: string[] = [];
+  const related = frontmatter.related;
+  for (const value of Array.isArray(related) ? related : related === undefined ? [] : [related]) {
+    if (typeof value === "string" && linkStem(value) !== "") stems.push(linkStem(value));
+  }
+  const walk = (value: unknown): void => {
+    if (typeof value === "string") {
+      for (const match of value.matchAll(/\[\[([^\]]+)\]\]/g)) if (linkStem(match[1]) !== "") stems.push(linkStem(match[1]));
+    } else if (Array.isArray(value)) value.forEach(walk);
+    else if (value !== null && typeof value === "object") Object.values(value).forEach(walk);
+  };
+  for (const [key, value] of Object.entries(frontmatter)) if (key !== "related") walk(value);
+  return stems;
+}
+
+/** Up to MAX_RELATED distinct notes the frontmatter links to, other than the note itself. */
+function relatedPaths(path: string, frontmatter: Record<string, unknown>, index: VectorIndex): string[] {
+  const found: string[] = [];
+  for (const stem of linkStems(frontmatter)) {
+    const target = index.pathOfStem(stem);
+    if (target !== null && target !== path && !found.includes(target)) found.push(target);
+    if (found.length === MAX_RELATED) break;
+  }
+  return found;
+}
+
+/** Title and description of the linked notes, in one plain query; a failure only leaves them out. */
+async function readRelated(deps: SearchDeps, connectionId: string, paths: string[], signal?: AbortSignal): Promise<Map<string, RelatedRecord>> {
+  const known = new Map<string, RelatedRecord>();
+  if (paths.length === 0) return known;
+  try {
+    const page = await deps.gateway.operation(
+      deps.connectionSetId, connectionId, "query",
+      { where: `file.path in [${paths.map(celString).join(", ")}]`, limit: paths.length },
+      { signal }
+    );
+    const results = (page as { results?: unknown } | null)?.results;
+    for (const item of Array.isArray(results) ? results : []) {
+      const r = item as { path?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
+      if (typeof r?.path === "string") known.set(r.path, { path: r.path, title: asText(r.frontmatter?.title) ?? fileStem(r.path), description: asText(r.frontmatter?.description) });
+    }
+  } catch (error) {
+    if (signal?.aborted) throw error;
+  }
+  return known;
+}
+
+interface Pool {
+  candidates: Candidate[];
+  total: number;
+  /** The best vector of each note that came from the embedding. */
+  near: Map<string, NearHit>;
+  dropped: string[];
+}
+
+/** Candidates by meaning and by exact name; null when the embedding is out. */
+async function semanticPool(
+  deps: SearchDeps, connectionId: string, index: VectorIndex, embedding: EmbeddingClient, input: SearchInput, signal?: AbortSignal
+): Promise<Pool | null> {
+  const filters = { types: input.types, folder: input.folder };
+  const [nearHits, exact] = await Promise.all([
+    embedding.embed([input.query], signal).then(
+      ([vector]) => index.nearest(vector, MAX_CANDIDATES, filters),
+      (error: unknown) => {
+        if (signal?.aborted) throw error;
+        return null;
+      }
+    ),
+    exactTermCandidates(deps.gateway, deps.connectionSetId, connectionId, input.terms ?? [], filters, { deadlineMs: EXACT_TERMS_DEADLINE_MS, signal })
+  ]);
+  if (nearHits === null) return null;
+  // A note both lists found goes ahead of those only the embedding found.
+  const ordered = [...nearHits.filter((h) => exact.paths.has(h.path)), ...nearHits.filter((h) => !exact.paths.has(h.path))];
+  const near = new Map(nearHits.map((h) => [h.path, h]));
+  const exactOnly = [...exact.paths.keys()].filter((p) => !near.has(p));
+  const paths = [...ordered.map((h) => h.path), ...exactOnly].slice(0, MAX_CANDIDATES);
+  const candidates = paths.map((path): Candidate => {
+    const known: ExactPath | undefined = exact.paths.get(path);
+    return {
+      path, title: known?.title ?? null, description: known?.description ?? null, types: known?.types ?? [], revision: known?.revision ?? "",
+      hits: { title: 0, description: 0, path: 0, body: 0 }, preScore: near.get(path)?.score ?? 0
+    };
+  });
+  return { candidates, total: nearHits.length + exactOnly.length, near, dropped: exact.dropped };
+}
+
 /** Throws GatewayOperationError for gateway failures and missing query access. */
 export async function searchRecords(deps: SearchDeps, connectionId: string, input: SearchInput, signal?: AbortSignal): Promise<SearchOutput> {
   const { gateway, connectionSetId } = deps;
@@ -85,32 +235,51 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
   }
 
   const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
-  const { candidates, total } = await gatherCandidates(
-    gateway, connectionSetId, connectionId, input.query, { types: input.types, folder: input.folder }, signal
-  );
+  const index = deps.vectors?.get(connection.collection_id) ?? null;
+  const semantic = index !== null && index.size() > 0 && deps.embedding
+    ? await semanticPool(deps, connectionId, index, deps.embedding, input, signal)
+    : null;
+  const pool: Pool = semantic ?? {
+    ...(await gatherCandidates(gateway, connectionSetId, connectionId, input.query, { types: input.types, folder: input.folder }, signal)),
+    near: new Map(), dropped: []
+  };
+  let candidates = pool.candidates;
   const output: SearchOutput = {
     results: [], start_here: null, ranking: "pre_order",
-    candidates_considered: candidates.length, candidates_total: total, truncated: false
+    candidates_considered: candidates.length, candidates_total: pool.total, truncated: false
   };
+  if (semantic === null) output.ranking_warning = "semantic_unavailable";
   if (candidates.length === 0) return output;
 
   // Peeks never wait: the first search of a connection may come without them.
   const indexes: IndexOption[] = deps.jev ? deps.indexList?.peek(connectionSetId, connectionId) ?? [] : [];
   const rulePaths = deps.folderRules?.peek(connectionSetId, connectionId) ?? null;
 
-  let bodies = new Map<string, string>();
+  let records = new Map<string, NoteRecord>();
   try {
-    bodies = await readBodies(gateway, connectionSetId, connectionId, candidates.map((c) => c.path), signal);
+    records = await readRecords(gateway, connectionSetId, connectionId, candidates.map((c) => c.path), signal);
+    // Semantic candidates come from vectors, which may hold notes this connection cannot read.
+    if (semantic !== null) candidates = candidates.filter((c) => records.has(c.path));
   } catch (error) {
     if (signal?.aborted) throw error;
     output.excerpt_warning = "bodies_unavailable";
   }
+  output.candidates_considered = candidates.length;
+  if (candidates.length === 0) return output;
+
   const { long, short } = searchTerms(input.query);
-  const terms = [...long, ...short];
+  const excerptTerms = [...(input.terms ?? []).map((t) => t.toLowerCase()), ...long, ...short];
   const excerpts = new Map<string, Excerpt | null>();
   for (const c of candidates) {
-    const body = bodies.get(c.path);
-    excerpts.set(c.path, body === undefined ? null : bestExcerpt(body, terms));
+    const record = records.get(c.path);
+    const hit = pool.near.get(c.path);
+    if (record === undefined) excerpts.set(c.path, null);
+    else if (hit?.kind === "chunk") excerpts.set(c.path, excerptAt(record.body, hit.lineStart, hit.lineEnd));
+    else excerpts.set(c.path, bestExcerpt(record.body, excerptTerms));
+    // The query result only knows what the stored note says; titles come from the frontmatter we just read.
+    const fm = record?.frontmatter ?? {};
+    c.title = asText(fm.title) ?? c.title;
+    c.description = asText(fm.description) ?? c.description;
   }
 
   let ranked: Array<{ candidate: Candidate; score: number }> = candidates.map((candidate) => ({ candidate, score: candidate.preScore }));
@@ -128,8 +297,17 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
       output.ranking_warning = warningOf(error);
     }
   }
+  // A late term is the mildest warning: it never hides semantic_unavailable or a Jev error.
+  if (semantic !== null && pool.dropped.length > 0 && output.ranking_warning === undefined) output.ranking_warning = "terms_timeout";
 
-  output.results = ranked.slice(0, limit).map(({ candidate, score }) => {
+  const shown = ranked.slice(0, limit);
+  const linked = new Map<string, string[]>();
+  if (index !== null) {
+    for (const { candidate } of shown) linked.set(candidate.path, relatedPaths(candidate.path, records.get(candidate.path)?.frontmatter ?? {}, index));
+  }
+  const relatedInfo = await readRelated(deps, connectionId, [...new Set([...linked.values()].flat())], signal);
+
+  output.results = shown.map(({ candidate, score }) => {
     const excerpt = excerpts.get(candidate.path) ?? null;
     return {
       path: candidate.path,
@@ -140,13 +318,17 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
       excerpt: excerpt?.text ?? null,
       heading: excerpt?.heading ?? null,
       folder_rule: rulePaths === null ? null : nearestFolderRule(candidate.path, rulePaths),
-      score
+      score,
+      related: (linked.get(candidate.path) ?? []).flatMap((p) => relatedInfo.get(p) ?? []),
+      validity: validityOf(candidate.path, records.get(candidate.path)?.frontmatter ?? {}, candidate.types)
     };
   });
   // The cap applies to the exact text the tool sends: compact JSON of this object.
-  if (serializeSearch(output).length > SEARCH_RESULT_MAX_CHARS) {
+  const over = () => serializeSearch(output).length > SEARCH_RESULT_MAX_CHARS;
+  if (over()) for (const r of output.results) r.related = [];
+  if (over()) {
     output.truncated = true;
-    while (output.results.length > 0 && serializeSearch(output).length > SEARCH_RESULT_MAX_CHARS) output.results.pop();
+    while (output.results.length > 0 && over()) output.results.pop();
   }
   return output;
 }

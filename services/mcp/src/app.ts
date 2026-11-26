@@ -88,9 +88,11 @@ export async function buildApp(options: BuildOptions) {
   app.addHook("onClose", async () => clearInterval(callLogPurge));
   // Vectors of each collection with embeddings enabled; the search tool reads them from here.
   const vectors = new VectorRegistry();
-  if (config.embedding) {
+  // One client for the indexer and for the query embedding of the search tool.
+  const embeddingClient = config.embedding ? createEmbeddingClient(config.embedding) : null;
+  if (config.embedding && embeddingClient) {
     const embedding = config.embedding;
-    const client = createEmbeddingClient(embedding);
+    const client = embeddingClient;
     for (const target of embedding.collections) {
       const store = new PgVectorStore(options.db, target.collectionId, embedding.model);
       const indexer = new EmbeddingIndexer({ gateway, client, store, registry: vectors, target, log: app.log });
@@ -278,6 +280,7 @@ export async function buildApp(options: BuildOptions) {
       indexList,
       jev,
       vectors,
+      embedding: embeddingClient,
       queryTextCollections: config.queryTextCollections
     });
     const transport = new StreamableHTTPServerTransport({
