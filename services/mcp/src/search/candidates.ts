@@ -1,4 +1,5 @@
 import type { ConnectGateway } from "../connect.js";
+import { GatewayOperationError } from "../errors.js";
 
 export const PRE_SCORE_WEIGHTS = { title: 3, description: 2, path: 2, body: 1 } as const;
 export const MAX_CANDIDATES = 30;
@@ -136,34 +137,45 @@ function storedOf(item: unknown): Stored | null {
   };
 }
 
+/** Runs a gateway read, trying once more when the authority answers `cursor_stale`. */
+export async function retryStale<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof GatewayOperationError && error.code === "cursor_stale") return read();
+    throw error;
+  }
+}
+
 type Filters = { types?: string[]; folder?: string };
 
 /** Reads through the gateway: one page of a query, and a term's whole body set. Shared by
  * the candidate gatherers so each keeps the same query shape and cursor handling. */
 function queryReader(gateway: ConnectGateway, connectionSetId: string, connectionId: string, filters: Filters, signal?: AbortSignal) {
-  const run = async (where: string, cursor?: string) => {
+  const run = async (where: string) => {
     // Plain query, not `output: "metadata"`: the hosted authority refuses metadata output
     // with a body condition (query_budget_exceeded) even for a handful of matches.
     const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
     if (filters.types && filters.types.length > 0) input.types = filters.types;
-    if (cursor) input.cursor = cursor;
-    const page = (await gateway.operation(connectionSetId, connectionId, "query", input, { signal })) as
+    const page = (await retryStale(() => gateway.operation(connectionSetId, connectionId, "query", input, { signal }))) as
       { results?: unknown; meta?: { has_more?: unknown; cursor?: unknown } | null } | null;
     const more = page?.meta?.has_more === true || (typeof page?.meta?.cursor === "string" && page.meta.cursor !== "");
-    const next = typeof page?.meta?.cursor === "string" && page.meta.cursor !== "" ? page.meta.cursor : null;
-    return { results: Array.isArray(page?.results) ? page.results : [], more, next };
+    return { results: Array.isArray(page?.results) ? page.results : [], more };
   };
-  // A term's whole body set, page by page, while it stays within QUERY_LIMIT notes;
-  // null when it is common (more than that, or more without a cursor to follow).
+  // A term's whole body set, page by page, while it stays within QUERY_LIMIT notes; null when
+  // it is common (more than that, or more without a path to continue from). Pages continue
+  // by `file.path >` (results come in ascending path order), never by cursor: the mirror is
+  // written all the time and a query cursor expires.
   const bodyOf = async (where: string): Promise<unknown[] | null> => {
     const all: unknown[] = [];
-    let cursor: string | undefined;
+    let pageWhere = where;
     for (;;) {
-      const page = await run(where, cursor);
+      const page = await run(pageWhere);
       all.push(...page.results);
       if (!page.more) return all;
-      if (all.length >= QUERY_LIMIT || page.next === null) return null;
-      cursor = page.next;
+      const last = (page.results[page.results.length - 1] as { path?: unknown } | undefined)?.path;
+      if (all.length >= QUERY_LIMIT || typeof last !== "string") return null;
+      pageWhere = `(${where}) && file.path > ${celString(last)}`;
     }
   };
   return { run, bodyOf };

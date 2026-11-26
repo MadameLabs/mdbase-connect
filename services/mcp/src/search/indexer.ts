@@ -1,6 +1,6 @@
 import { normalizeCollectionChange } from "../change-events.js";
 import type { ConnectGateway } from "../connect.js";
-import { celString } from "./candidates.js";
+import { celString, retryStale } from "./candidates.js";
 import { embedUnits } from "./chunks.js";
 import { EMBED_BATCH, type EmbeddingClient } from "./embeddings.js";
 import { VectorIndex, type PgVectorStore, type StoredUnit, type VectorRegistry } from "./vector-store.js";
@@ -148,14 +148,18 @@ export class EmbeddingIndexer {
     const seen = new Set<string>();
     let indexed = 0;
     let deleted = 0;
-    let queryCursor: string | undefined;
+    // Pages continue by `file.path >` (results come in ascending path order), never by
+    // cursor: the mirror is written all the time and a query cursor expires.
+    let where = "true";
     for (;;) {
-      const page = await gateway.operation<QueryPage>(
-        target.connectionSetId,
-        target.connectionId,
-        "query",
-        { where: "true", include_body: true, limit: QUERY_PAGE, ...(queryCursor ? { cursor: queryCursor } : {}) },
-        { signal }
+      const page = await retryStale(() =>
+        gateway.operation<QueryPage>(
+          target.connectionSetId,
+          target.connectionId,
+          "query",
+          { where, include_body: true, limit: QUERY_PAGE },
+          { signal }
+        )
       );
       const notes: NoteRecord[] = [];
       for (const item of page?.results ?? []) {
@@ -166,8 +170,9 @@ export class EmbeddingIndexer {
         notes.push(note);
       }
       indexed += await this.saveNotes(notes, signal);
-      if (!page?.meta?.has_more || !page.meta.cursor) break;
-      queryCursor = page.meta.cursor;
+      const last = (page?.results?.[page.results.length - 1] as { path?: unknown } | undefined)?.path;
+      if ((!page?.meta?.has_more && !page?.meta?.cursor) || typeof last !== "string") break;
+      where = `file.path > ${celString(last)}`;
     }
     for (const path of index.paths()) {
       if (seen.has(path)) continue;

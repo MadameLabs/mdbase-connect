@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectGateway } from "../connect.js";
+import { GatewayOperationError } from "../errors.js";
 import type { EmbeddingClient } from "./embeddings.js";
 import { EmbeddingError } from "./embeddings.js";
 import { EmbeddingIndexer } from "./indexer.js";
@@ -20,7 +21,8 @@ function noteResult(n: Note) {
 }
 
 /** Scripted gateway: `query` answers from `notes` (full read pages of `pageSize`, or by file.path), `changes` from `pages`. */
-function fakeGateway(options: { notes: Note[]; pages?: Array<Record<string, unknown>>; startCursor?: number; pageSize?: number }) {
+function fakeGateway(options: { notes: Note[]; pages?: Array<Record<string, unknown>>; startCursor?: number; pageSize?: number; staleFirstPage?: number }) {
+  let stale = options.staleFirstPage ?? 0;
   const pages = [...(options.pages ?? [])];
   const operation = vi.fn(async (_set: string, _conn: string, op: string, input: Record<string, unknown>) => {
     if (op === "changes") {
@@ -29,13 +31,21 @@ function fakeGateway(options: { notes: Note[]; pages?: Array<Record<string, unkn
       if (!next) return { events: [], cursor: input.after, has_more: false, reset: false };
       return next;
     }
+    // The authority refuses to resume a query by cursor: the mirror is written all the time.
+    if (input.where === "true" && stale > 0) {
+      stale -= 1;
+      throw new GatewayOperationError("cursor_stale", "cursor expired");
+    }
+    if (input.cursor !== undefined) throw new GatewayOperationError("cursor_stale", "cursor expired");
     const where = String(input.where);
-    if (where === "true") {
+    const after = /^file\.path > "((?:[^"\\]|\\.)*)"$/.exec(where);
+    if (where === "true" || after) {
       const size = options.pageSize ?? 100;
-      const from = input.cursor ? Number(input.cursor) : 0;
-      const slice = options.notes.slice(from, from + size);
-      const more = from + size < options.notes.length;
-      return { results: slice.map(noteResult), meta: { has_more: more, cursor: more ? String(from + size) : null } };
+      const sorted = [...options.notes].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+      const rest = after ? sorted.filter((n) => n.path > after[1]!) : sorted;
+      const slice = rest.slice(0, size);
+      const more = rest.length > size;
+      return { results: slice.map(noteResult), meta: { has_more: more, cursor: more ? "opaque" : null } };
     }
     const wanted = [...where.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
     return { results: options.notes.filter((n) => wanted.includes(n.path)).map(noteResult), meta: { has_more: false, cursor: null } };
@@ -99,6 +109,30 @@ describe("EmbeddingIndexer", () => {
     const index = t.registry.get("col-1")!;
     expect(index.paths().sort()).toEqual(["a.md", "c.md", "pasta/b.md"]);
     expect(index.unitsOf("pasta/b.md")[0]).toMatchObject({ folder: "pasta", types: ["note"], revision: "r1" });
+  });
+
+  it("lê a coleção por caminho, nunca por cursor, e guarda o cursor do changes", async () => {
+    const t = build({ notes: [{ path: "a.md" }, { path: "b.md" }, { path: "c.md" }, { path: "d.md" }, { path: "e.md" }], startCursor: 9, pageSize: 2 });
+    expect(await t.indexer.runOnce()).toEqual({ indexed: 5, deleted: 0, full: true });
+    const reads = t.operation.mock.calls.filter((c) => c[2] === "query").map((c) => c[3] as Record<string, unknown>);
+    expect(reads.map((r) => r.where)).toEqual(["true", 'file.path > "b.md"', 'file.path > "d.md"']);
+    for (const r of reads) {
+      expect(r).not.toHaveProperty("cursor");
+      expect(r).toMatchObject({ include_body: true, limit: 100 });
+    }
+    expect(t.calls[t.calls.length - 1]).toBe("cursor:9");
+  });
+
+  it("cursor_stale na primeira página: tenta a mesma página de novo e segue", async () => {
+    const t = build({ notes: [{ path: "a.md" }, { path: "b.md" }], startCursor: 3, staleFirstPage: 1 });
+    expect(await t.indexer.runOnce()).toEqual({ indexed: 2, deleted: 0, full: true });
+    expect(t.operation.mock.calls.filter((c) => c[2] === "query" && (c[3] as { where: string }).where === "true")).toHaveLength(2);
+  });
+
+  it("cursor_stale duas vezes seguidas: o erro sobe e nada é gravado", async () => {
+    const t = build({ notes: [{ path: "a.md" }], startCursor: 3, staleFirstPage: 2 });
+    await expect(t.indexer.runOnce()).rejects.toMatchObject({ code: "cursor_stale" });
+    expect(t.calls.filter((c) => c.startsWith("cursor:"))).toEqual([]);
   });
 
   it("só embeda unidade de hash novo", async () => {

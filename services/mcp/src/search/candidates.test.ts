@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectGateway } from "../connect.js";
+import { GatewayOperationError } from "../errors.js";
 import { BODY_TERMS, MAX_CANDIDATES, bodyExpression, exactTermCandidates, folderRange, gatherCandidates, metaExpression, searchTerms } from "./candidates.js";
 
 type Row = { path: string; types?: string[]; revision?: string; frontmatter?: Record<string, unknown> };
@@ -7,16 +8,23 @@ const BODY_RE = /^\(?file\.body\.lower\(\)\.contains\("([^"]*)"\)/;
 const isBodyWhere = (where: string) => BODY_RE.test(where);
 /** One body query per long term (`body[term]`, served `pageSize` rows a page with a
  * numeric cursor) and one title/description/path query (`meta`). */
-function fake(lists: { body?: Record<string, Row[]>; meta?: Row[]; pageSize?: number }) {
+function fake(lists: { body?: Record<string, Row[]>; meta?: Row[]; pageSize?: number; staleFirst?: number }) {
+  let stale = lists.staleFirst ?? 0;
   const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string; cursor?: string }) => {
+    // The authority refuses to resume a query by cursor: pages continue by `file.path >`.
+    if (input.cursor !== undefined) throw new GatewayOperationError("cursor_stale", "cursor expired");
     const m = BODY_RE.exec(input.where);
-    const all = (m ? lists.body?.[m[1]] : lists.meta) ?? [];
+    if (m && stale > 0) {
+      stale -= 1;
+      throw new GatewayOperationError("cursor_stale", "cursor expired");
+    }
+    const sorted = [...((m ? lists.body?.[m[1]] : lists.meta) ?? [])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const after = /&& file\.path > "([^"]*)"$/.exec(input.where);
+    const all = after ? sorted.filter((r) => r.path > after[1]!) : sorted;
     const size = m ? lists.pageSize ?? Infinity : Infinity;
-    const from = input.cursor ? Number(input.cursor) : 0;
-    const source = all.slice(from, from + size);
-    const results = source.map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", frontmatter: r.frontmatter ?? {} }));
-    const next = from + size < all.length ? String(from + size) : null;
-    return { results, meta: next ? { has_more: true, cursor: next } : { has_more: false } };
+    const results = all.slice(0, size).map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", frontmatter: r.frontmatter ?? {} }));
+    const more = all.length > size;
+    return { results, meta: more ? { has_more: true, cursor: "opaque" } : { has_more: false } };
   });
   return { gateway: { operation } as unknown as ConnectGateway, operation };
 }
@@ -133,15 +141,30 @@ describe("gatherCandidates", () => {
     expect(metaWhere(operation)).toContain('startsWith("a\\"b\\\\c/")');
   });
 
-  it("termo médio: o corpo segue o cursor até o fim", async () => {
+  it("termo médio: o corpo segue por caminho até o fim", async () => {
     const rows = Array.from({ length: 5 }, (_, i) => ({ path: `s${i}.md` }));
     const { gateway, operation } = fake({ body: { sudo: rows }, pageSize: 2 });
     const r = await gatherCandidates(gateway, "s", "c", "sudo", {});
     const sudoCalls = operation.mock.calls.filter((c) => isBodyWhere((c[3] as { where: string }).where));
-    expect(sudoCalls.map((c) => (c[3] as { cursor?: string }).cursor)).toEqual([undefined, "2", "4"]);
-    for (const c of sudoCalls) expect((c[3] as { where: string }).where).toBe('file.body.lower().contains("sudo")');
+    expect(sudoCalls.map((c) => (c[3] as { where: string }).where)).toEqual([
+      'file.body.lower().contains("sudo")',
+      '(file.body.lower().contains("sudo")) && file.path > "s1.md"',
+      '(file.body.lower().contains("sudo")) && file.path > "s3.md"'
+    ]);
+    for (const c of sudoCalls) expect(c[3]).not.toHaveProperty("cursor");
     expect(r.total).toBe(5);
     expect(r.candidates.every((c) => c.hits.body === 1)).toBe(true);
+  });
+
+  it("cursor_stale na primeira página do corpo: tenta de novo e segue", async () => {
+    const { gateway } = fake({ body: { sudo: [{ path: "a.md" }, { path: "b.md" }] }, staleFirst: 1 });
+    const r = await gatherCandidates(gateway, "s", "c", "sudo", {});
+    expect(r.total).toBe(2);
+  });
+
+  it("cursor_stale duas vezes na mesma página: o erro sobe", async () => {
+    const { gateway } = fake({ body: { sudo: [{ path: "a.md" }] }, staleFirst: 2 });
+    await expect(gatherCandidates(gateway, "s", "c", "sudo", {})).rejects.toMatchObject({ code: "cursor_stale" });
   });
 
   it("termo comum (mais de 300 notas no corpo): descartado, sem passar de 300", async () => {
