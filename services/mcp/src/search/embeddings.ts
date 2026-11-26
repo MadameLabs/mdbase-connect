@@ -4,7 +4,8 @@ export const EMBED_BATCH = 64;
 export interface EmbeddingClient {
   model: string;
   // Unit-length vectors, in the same order as `texts`.
-  embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]>;
+  // `timeoutMs` bounds each HTTP request; a timeout is an embedding_unavailable error.
+  embed(texts: string[], signal?: AbortSignal, options?: { timeoutMs?: number }): Promise<Float32Array[]>;
 }
 
 export type EmbeddingErrorCode = "embedding_unavailable" | "embedding_rate_limited" | "embedding_invalid_response";
@@ -22,10 +23,10 @@ export function createEmbeddingClient(
 ): EmbeddingClient {
   return {
     model: config.model,
-    async embed(texts, signal) {
+    async embed(texts, signal, options) {
       const vectors: Float32Array[] = [];
       for (let start = 0; start < texts.length; start += EMBED_BATCH) {
-        vectors.push(...(await embedBatch(config, fetchImpl, texts.slice(start, start + EMBED_BATCH), signal)));
+        vectors.push(...(await embedBatch(config, fetchImpl, texts.slice(start, start + EMBED_BATCH), signal, options?.timeoutMs)));
       }
       return vectors;
     }
@@ -36,9 +37,12 @@ async function embedBatch(
   config: { apiKey: string; model: string; endpoint: string; dimensions: number },
   fetchImpl: typeof fetch,
   texts: string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs?: number
 ): Promise<Float32Array[]> {
   if (texts.length === 0) return [];
+  const signals = [signal, timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)].filter((s): s is AbortSignal => s !== undefined);
+  const combined = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
   const body = { model: config.model, input: texts, dimensions: config.dimensions };
   let response: Response;
   try {
@@ -46,12 +50,13 @@ async function embedBatch(
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` },
       body: JSON.stringify(body),
-      signal
+      signal: combined
     });
   } catch (error) {
     // The message is fixed text: it never echoes the transport error, which could carry request details.
-    const aborted = error instanceof Error && error.name === "AbortError";
-    throw new EmbeddingError("embedding_unavailable", aborted ? "Embedding request aborted." : "Embedding request failed.");
+    const name = error instanceof Error ? error.name : "";
+    const message = name === "TimeoutError" ? "Embedding request timed out." : name === "AbortError" ? "Embedding request aborted." : "Embedding request failed.";
+    throw new EmbeddingError("embedding_unavailable", message);
   }
   if (response.status === 429) throw new EmbeddingError("embedding_rate_limited", "Embedding rate limit reached (HTTP 429).");
   if (!response.ok) throw new EmbeddingError("embedding_unavailable", `Embedding service responded with HTTP ${response.status}.`);

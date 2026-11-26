@@ -70,6 +70,14 @@ describe("VectorIndex", () => {
     ]);
   });
 
+  it("nearest com folder de barra final acha as notas da pasta", () => {
+    const index = new VectorIndex();
+    index.replaceNote("13-engenharia/a.md", [unit("13-engenharia/a.md", { vector: vec(1, 0) })]);
+    index.replaceNote("outra/b.md", [unit("outra/b.md", { vector: vec(1, 0) })]);
+    expect(index.nearest(vec(1, 0), 5, { folder: "13-engenharia/" }).map((r) => r.path)).toEqual(["13-engenharia/a.md"]);
+    expect(index.nearest(vec(1, 0), 5, { folder: "13-engenharia//" }).map((r) => r.path)).toEqual(["13-engenharia/a.md"]);
+  });
+
   it("nearest devolve no máximo k notas e nunca corta no meio de uma nota", () => {
     const index = new VectorIndex();
     for (let i = 0; i < 4; i++) {
@@ -243,6 +251,18 @@ describe("PgVectorStore", () => {
     expect(best[0].score).toBeCloseTo(1, 5);
     expect(await new PgVectorStore(db as never, COLLECTION, MODEL).cursor()).toBe("cursor-42");
     expect(await new PgVectorStore(db as never, COLLECTION, "outro-modelo").cursor()).toBeNull();
+  });
+
+  it("load marca o índice como pronto só quando há cursor", async () => {
+    const db = fakeVectorDb();
+    const store = new PgVectorStore(db as never, COLLECTION, MODEL);
+    await store.saveNote("a/nota.md", [unit("a/nota.md", { textHash: "h-1" })]);
+
+    expect((await store.load()).ready).toBe(false);
+
+    await store.setCursor("c-1");
+
+    expect((await store.load()).ready).toBe(true);
   });
 
   it("nenhuma coluna recebe texto: só o hash, o vetor e os metadados", async () => {

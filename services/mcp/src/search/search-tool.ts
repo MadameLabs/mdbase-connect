@@ -18,6 +18,8 @@ export const JEV_INDEX_BONUS = 0.1;
 export const DEFAULT_SEARCH_LIMIT = 8;
 /** Linked records listed per result. */
 export const MAX_RELATED = 5;
+/** How long the search waits for the query embedding before using the reserve. */
+export const SEMANTIC_EMBED_TIMEOUT_MS = 3_000;
 
 export interface RelatedRecord {
   path: string;
@@ -122,7 +124,7 @@ function validityOf(path: string, frontmatter: Record<string, unknown>, fallback
     type: types[0] ?? null,
     status: asText(frontmatter.status),
     date,
-    archived: types.includes("arquivo") || path.includes("99-arquivo/")
+    archived: types.includes("arquivo") || /(^|\/)99-arquivo\//.test(path)
   };
 }
 
@@ -197,7 +199,7 @@ async function semanticPool(
 ): Promise<Pool | null> {
   const filters = { types: input.types, folder: input.folder };
   const [nearHits, exact] = await Promise.all([
-    embedding.embed([input.query], signal).then(
+    embedding.embed([input.query], signal, { timeoutMs: SEMANTIC_EMBED_TIMEOUT_MS }).then(
       ([vector]) => index.nearest(vector, MAX_CANDIDATES, filters),
       (error: unknown) => {
         if (signal?.aborted) throw error;
@@ -242,11 +244,11 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
 
   const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
   const index = deps.vectors?.get(connection.collection_id) ?? null;
-  let semantic = index !== null && index.size() > 0 && deps.embedding
+  let semantic = index !== null && index.ready && deps.embedding
     ? await semanticPool(deps, connectionId, index, deps.embedding, input, signal)
     : null;
   const reserve = async (): Promise<Pool> => ({
-    ...(await gatherCandidates(gateway, connectionSetId, connectionId, input.query, { types: input.types, folder: input.folder }, signal)),
+    ...(await gatherCandidates(gateway, connectionSetId, connectionId, [input.query, ...(input.terms ?? [])].join(" "), { types: input.types, folder: input.folder }, signal)),
     near: new Map(), dropped: []
   });
   let pool: Pool = semantic ?? (await reserve());
@@ -296,7 +298,7 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
     const record = records.get(c.path);
     const hit = pool.near.get(c.path);
     if (record === undefined) excerpts.set(c.path, null);
-    else if (hit?.kind === "chunk") excerpts.set(c.path, excerptAt(record.body, hit.lineStart, hit.lineEnd));
+    else if (hit?.kind === "chunk") excerpts.set(c.path, excerptAt(record.body, hit.lineStart, hit.lineEnd, excerptTerms));
     else excerpts.set(c.path, bestExcerpt(record.body, excerptTerms));
     // The query result only knows what the stored note says; titles come from the frontmatter we just read.
     const fm = record?.frontmatter ?? {};
@@ -347,7 +349,10 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
   });
   // The cap applies to the exact text the tool sends: compact JSON of this object.
   const over = () => serializeSearch(output).length > SEARCH_RESULT_MAX_CHARS;
-  if (over()) for (const r of output.results) r.related = [];
+  if (over()) {
+    if (output.results.some((r) => r.related.length > 0)) output.truncated = true;
+    for (const r of output.results) r.related = [];
+  }
   if (over()) {
     output.truncated = true;
     while (output.results.length > 0 && over()) output.results.pop();

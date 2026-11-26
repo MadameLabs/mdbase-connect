@@ -44,7 +44,7 @@ function fakeGateway(options: { notes: Note[]; pages?: Array<Record<string, unkn
 }
 
 function fakeClient() {
-  const embed = vi.fn(async (texts: string[]) => texts.map((t) => Float32Array.from([t.length, 1])));
+  const embed = vi.fn(async (texts: string[], _signal?: AbortSignal, _options?: { timeoutMs?: number }) => texts.map((t) => Float32Array.from([t.length, 1])));
   return { client: { model: "m", embed } as EmbeddingClient, embed };
 }
 
@@ -202,5 +202,62 @@ describe("EmbeddingIndexer", () => {
     const result = await t.indexer.runOnce();
     expect(result.indexed).toBe(1);
     expect(t.registry.get("col-1")!.paths()).toEqual(["a.md"]);
+  });
+});
+
+describe("EmbeddingIndexer: correções da revisão final", () => {
+  it("o índice só fica pronto depois do cursor da passada completa", async () => {
+    const t = build({ notes: [{ path: "a.md" }, { path: "b.md" }], startCursor: 7 });
+    const seen: boolean[] = [];
+    t.embed.mockImplementation(async (texts: string[]) => {
+      seen.push(t.registry.get("col-1")!.ready);
+      return texts.map((x) => Float32Array.from([x.length, 1]));
+    });
+    await t.indexer.runOnce();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((ready) => !ready)).toBe(true);
+    expect(t.registry.get("col-1")!.ready).toBe(true);
+  });
+
+  it("nota com linha de 5.600 caracteres grava unidades de seq único", async () => {
+    const t = build({ notes: [{ path: "a.md", body: `# T\n\n${"palavra ".repeat(800)}` }] });
+    await t.indexer.runOnce();
+    const units = t.registry.get("col-1")!.unitsOf("a.md");
+    expect(units.length).toBeGreaterThan(3);
+    expect(new Set(units.map((u) => u.seq)).size).toBe(units.length);
+  });
+
+  it("junta as unidades de várias notas numa chamada só e grava cada nota depois de ter os vetores", async () => {
+    const notes = Array.from({ length: 6 }, (_, i) => ({ path: `n${i}.md`, body: `texto único ${i}` }));
+    const t = build({ notes, startCursor: 3 });
+    const saved: number[] = [];
+    t.embed.mockImplementation(async (texts: string[]) => {
+      saved.push(t.store.saveNote.mock.calls.length);
+      return texts.map((x) => Float32Array.from([x.length, 1]));
+    });
+    const result = await t.indexer.runOnce();
+    expect(result.indexed).toBe(6);
+    // 6 notes x (card + chunk) = 12 texts, well under one batch: a single request
+    expect(t.embed).toHaveBeenCalledTimes(1);
+    expect(t.embed.mock.calls[0][0]).toHaveLength(12);
+    // nothing is written before the vectors exist
+    expect(saved).toEqual([0]);
+    expect(t.store.saveNote).toHaveBeenCalledTimes(6);
+    expect(t.calls[t.calls.length - 1]).toBe("cursor:3");
+  });
+
+  it("as chamadas de embedding do indexador têm prazo de 60.000 ms", async () => {
+    const t = build({ notes: [{ path: "a.md" }] });
+    await t.indexer.runOnce();
+    expect(t.embed.mock.calls[0][2]).toEqual({ timeoutMs: 60_000 });
+  });
+
+  it("falha no lote não grava nenhuma nota dele nem avança o cursor", async () => {
+    const t = build({ notes: [{ path: "a.md" }, { path: "b.md" }] });
+    t.embed.mockRejectedValueOnce(new EmbeddingError("embedding_unavailable", "fora do ar"));
+    await expect(t.indexer.runOnce()).rejects.toThrow("fora do ar");
+    expect(t.store.saveNote).not.toHaveBeenCalled();
+    expect(t.store.setCursor).not.toHaveBeenCalled();
+    expect(t.registry.get("col-1")?.ready ?? false).toBe(false);
   });
 });

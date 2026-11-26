@@ -44,6 +44,36 @@ describe("createEmbeddingClient", () => {
     out.forEach((v, g) => expect(v[0]).toBeCloseTo((g + 1) / Math.hypot(g + 1, 1), 6));
   });
 
+  it("timeoutMs aborta o pedido que nunca responde e vira embedding_unavailable", async () => {
+    const never = vi.fn((_url: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      })
+    );
+    const started = Date.now();
+    const err = await createEmbeddingClient(config, never as unknown as typeof fetch)
+      .embed(["t0"], undefined, { timeoutMs: 30 })
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(EmbeddingError);
+    expect((err as EmbeddingError).code).toBe("embedding_unavailable");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("o signal do chamador continua valendo junto com o prazo", async () => {
+    const never = vi.fn((_url: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      })
+    );
+    const controller = new AbortController();
+    const pending = createEmbeddingClient(config, never as unknown as typeof fetch)
+      .embed(["t0"], controller.signal, { timeoutMs: 60_000 })
+      .then(() => null, (e: unknown) => e);
+    controller.abort();
+    const err = await pending;
+    expect((err as EmbeddingError).code).toBe("embedding_unavailable");
+  });
+
   it("vetores voltam com norma 1, como Float32Array", async () => {
     const f = vi.fn(async (_url: unknown, init?: RequestInit) => embeddingReply(init));
     const out = await createEmbeddingClient(config, f as unknown as typeof fetch).embed(["t0", "t7"]);

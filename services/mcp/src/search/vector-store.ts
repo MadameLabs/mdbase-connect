@@ -56,6 +56,8 @@ export class VectorIndex {
   private readonly notes = new Map<string, StoredUnit[]>();
   private readonly stems = new Map<string, Set<string>>();
   private vectorCount = 0;
+  /** True once the vectors cover the whole collection: after a full pass, or a load with a stored cursor. */
+  ready = false;
 
   /** Replaces every vector of the note. An empty list removes the note. */
   replaceNote(path: string, units: StoredUnit[]): void {
@@ -122,7 +124,8 @@ export class VectorIndex {
    * would be dropped.
    */
   nearest(query: Float32Array, k: number, filter: NearFilter = {}): NearHit[] {
-    const prefix = filter.folder ? `${filter.folder}/` : null;
+    const folder = filter.folder?.replace(/\/+$/, "") ?? "";
+    const prefix = folder !== "" ? `${folder}/` : null;
     const types = filter.types && filter.types.length > 0 ? new Set(filter.types) : null;
     const hits: NearHit[] = [];
 
@@ -228,6 +231,8 @@ export class PgVectorStore {
     }
     const index = new VectorIndex();
     for (const [path, units] of byPath) index.replaceNote(path, units);
+    // A stored cursor means a full pass finished before; without it the rows are a partial first run.
+    index.ready = (await this.cursor()) !== null;
     return index;
   }
 

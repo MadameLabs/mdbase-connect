@@ -193,7 +193,7 @@ export function createMcpServer(
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   }, async ({ connection_id, query, terms, types, folder, limit }, { signal }) => {
-    const observe = track("search_records", connection_id, { query });
+    const observe = track("search_records", connection_id, { query, terms });
     try {
       const output = await searchRecords(
         { gateway, connectionSetId: context.connectionSetId, jev: options.jev, indexList: options.indexList, folderRules: options.folderRules, vectors: options.vectors, embedding: options.embedding },
@@ -597,9 +597,12 @@ function callTracker(
   };
 }
 
+/** The search query, followed by its exact terms when it has any. */
 function queryOf(input: unknown): string | null {
   const query = isObject(input) ? input.query : undefined;
-  return typeof query === "string" ? query : null;
+  if (typeof query !== "string") return null;
+  const terms = isObject(input) && Array.isArray(input.terms) ? input.terms.filter((t): t is string => typeof t === "string") : [];
+  return terms.length > 0 ? `${query} | terms: ${terms.join(", ")}` : query;
 }
 
 function rankingOf(value: unknown): string | null {

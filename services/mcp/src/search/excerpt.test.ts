@@ -112,6 +112,30 @@ describe("excerptAt", () => {
     const e = excerptAt("# Um\r\nx\r\n## Dois\r\ny\r\nz", 4, 5);
     expect(e).toMatchObject({ text: "y\nz", lineStart: 4, lineEnd: 5, heading: "Dois" });
   });
+  it("corta em EXCERPT_MAX_CHARS, do começo quando não há termos, e ajusta as linhas", () => {
+    const body = Array.from({ length: 10 }, (_, i) => `l${i} ${"x".repeat(396)}`).join("\n");
+    const e = excerptAt(body, 1, 10);
+    expect(e.text.length).toBeLessThanOrEqual(EXCERPT_MAX_CHARS);
+    expect(e.lineStart).toBe(1);
+    expect(e.lineEnd).toBeLessThan(10);
+    expect(e.text.startsWith("l0 ")).toBe(true);
+    expect(e.text.split("\n")).toHaveLength(e.lineEnd - e.lineStart + 1);
+  });
+  it("com termos, centra o recorte onde eles aparecem", () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `l${i} ${"x".repeat(396)}`);
+    lines[8] = `l8 AGULHA ${"x".repeat(390)}`;
+    const e = excerptAt(lines.join("\n"), 1, 10, ["agulha"]);
+    expect(e.text.length).toBeLessThanOrEqual(EXCERPT_MAX_CHARS);
+    expect(e.text).toContain("AGULHA");
+    expect(e.lineStart).toBeGreaterThan(1);
+    expect(e.lineStart).toBeLessThanOrEqual(9);
+    expect(e.lineEnd).toBeGreaterThanOrEqual(9);
+  });
+  it("uma linha só maior que o teto também é cortada", () => {
+    const e = excerptAt(`a\n${"z".repeat(5_000)}\nb`, 2, 2);
+    expect(e.text.length).toBe(EXCERPT_MAX_CHARS);
+    expect(e).toMatchObject({ lineStart: 2, lineEnd: 2 });
+  });
   it("limita a faixa ao tamanho do corpo", () => {
     const e = excerptAt("a\nb", 2, 9);
     expect(e).toMatchObject({ text: "b", lineStart: 2, lineEnd: 2 });

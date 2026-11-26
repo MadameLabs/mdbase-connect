@@ -2,12 +2,14 @@ import { normalizeCollectionChange } from "../change-events.js";
 import type { ConnectGateway } from "../connect.js";
 import { celString } from "./candidates.js";
 import { embedUnits } from "./chunks.js";
-import type { EmbeddingClient } from "./embeddings.js";
+import { EMBED_BATCH, type EmbeddingClient } from "./embeddings.js";
 import { VectorIndex, type PgVectorStore, type StoredUnit, type VectorRegistry } from "./vector-store.js";
 
 const CHANGES_PAGE = 200;
 const READ_BATCH = 20;
 const QUERY_PAGE = 100;
+/** Deadline of one embedding request while indexing. */
+export const INDEX_EMBED_TIMEOUT_MS = 60_000;
 
 export interface IndexerTarget {
   collectionId: string;
@@ -75,6 +77,14 @@ function toRecord(item: unknown): NoteRecord | null {
     frontmatter: r.frontmatter && typeof r.frontmatter === "object" ? r.frontmatter : {},
     body: typeof r.body === "string" ? r.body : ""
   };
+}
+
+/** What saving one note needs: its units, the vectors it can reuse and the texts to embed. */
+interface NotePlan {
+  note: NoteRecord;
+  units: ReturnType<typeof embedUnits>;
+  known: Map<string, Float32Array>;
+  fresh: Array<[string, string]>;
 }
 
 /** Same hashes, lines, revision, types and folder: nothing to write. */
@@ -147,13 +157,15 @@ export class EmbeddingIndexer {
         { where: "true", include_body: true, limit: QUERY_PAGE, ...(queryCursor ? { cursor: queryCursor } : {}) },
         { signal }
       );
+      const notes: NoteRecord[] = [];
       for (const item of page?.results ?? []) {
         const note = toRecord(item);
         if (!note) continue;
         if (!isIndexable(note)) continue;
         seen.add(note.path);
-        if (await this.saveNote(note, signal)) indexed += 1;
+        notes.push(note);
       }
+      indexed += await this.saveNotes(notes, signal);
       if (!page?.meta?.has_more || !page.meta.cursor) break;
       queryCursor = page.meta.cursor;
     }
@@ -163,6 +175,8 @@ export class EmbeddingIndexer {
       deleted += 1;
     }
     await store.setCursor(start);
+    // Only now do the vectors cover the whole collection.
+    index.ready = true;
     return { indexed, deleted, full: true };
   }
 
@@ -193,15 +207,16 @@ export class EmbeddingIndexer {
       for (let i = 0; i < paths.length; i += READ_BATCH) {
         const batch = paths.slice(i, i + READ_BATCH);
         const notes = await this.readNotes(batch, signal);
+        const present: NoteRecord[] = [];
         for (const path of batch) {
           const note = notes.get(path);
-          if (note && isIndexable(note)) {
-            if (await this.saveNote(note, signal)) indexed += 1;
-          } else if (await this.removeNote(path)) {
+          if (note && isIndexable(note)) present.push(note);
+          else if (await this.removeNote(path)) {
             // Gone, or no longer an indexable note: drop its vectors.
             deleted += 1;
           }
         }
+        indexed += await this.saveNotes(present, signal);
       }
 
       cursor = String(page.cursor);
@@ -227,35 +242,71 @@ export class EmbeddingIndexer {
     return notes;
   }
 
-  /** Embeds the units whose hash is new, keeps the stored vector of the others, and saves the note. Returns whether it wrote. */
-  private async saveNote(note: NoteRecord, signal?: AbortSignal): Promise<boolean> {
-    const { client, store } = this.deps;
-    const index = this.index();
-    const known = new Map(index.unitsOf(note.path).map((u) => [u.textHash, u.vector]));
+  /**
+   * Embeds the new units of several notes together, up to EMBED_BATCH texts per request, and
+   * saves each note only once all its vectors exist. Returns how many notes it wrote.
+   */
+  private async saveNotes(notes: NoteRecord[], signal?: AbortSignal): Promise<number> {
+    let written = 0;
+    let group: NotePlan[] = [];
+    let pending = 0;
+    const flush = async (): Promise<void> => {
+      const batch = group;
+      group = [];
+      pending = 0;
+      written += await this.embedAndSave(batch, signal);
+    };
+    for (const note of notes) {
+      const plan = this.plan(note);
+      group.push(plan);
+      pending += plan.fresh.length;
+      if (pending >= EMBED_BATCH) await flush();
+    }
+    if (group.length > 0) await flush();
+    return written;
+  }
+
+  /** The units of the note, the vectors already known for them, and the texts still to embed. */
+  private plan(note: NoteRecord): NotePlan {
+    const known = new Map(this.index().unitsOf(note.path).map((u) => [u.textHash, u.vector]));
     const units = embedUnits(note.path, note.frontmatter, note.body);
     const fresh = [...new Map(units.filter((u) => !known.has(u.hash)).map((u) => [u.hash, u.text]))];
-    if (fresh.length > 0) {
-      const vectors = await client.embed(fresh.map(([, text]) => text), signal);
-      if (vectors.length !== fresh.length) throw new Error("Embedding client returned the wrong number of vectors.");
-      fresh.forEach(([hash], i) => known.set(hash, vectors[i]!));
+    return { note, units, known, fresh };
+  }
+
+  private async embedAndSave(plans: NotePlan[], signal?: AbortSignal): Promise<number> {
+    const { client, store } = this.deps;
+    const index = this.index();
+    const texts = new Map<string, string>();
+    for (const plan of plans) for (const [hash, text] of plan.fresh) texts.set(hash, text);
+    if (texts.size > 0) {
+      const hashes = [...texts.keys()];
+      const vectors = await client.embed([...texts.values()], signal, { timeoutMs: INDEX_EMBED_TIMEOUT_MS });
+      if (vectors.length !== hashes.length) throw new Error("Embedding client returned the wrong number of vectors.");
+      const byHash = new Map(hashes.map((hash, i) => [hash, vectors[i]!]));
+      for (const plan of plans) for (const [hash] of plan.fresh) plan.known.set(hash, byHash.get(hash)!);
     }
-    const folder = folderOf(note.path);
-    const stored: StoredUnit[] = units.map((u) => ({
-      path: note.path,
-      kind: u.kind,
-      seq: u.seq,
-      lineStart: u.lineStart,
-      lineEnd: u.lineEnd,
-      textHash: u.hash,
-      revision: note.revision,
-      types: note.types,
-      folder,
-      vector: known.get(u.hash)!
-    }));
-    if (sameUnits(index.unitsOf(note.path), stored)) return false;
-    await store.saveNote(note.path, stored);
-    index.replaceNote(note.path, stored);
-    return true;
+    let written = 0;
+    for (const { note, units, known } of plans) {
+      const folder = folderOf(note.path);
+      const stored: StoredUnit[] = units.map((u) => ({
+        path: note.path,
+        kind: u.kind,
+        seq: u.seq,
+        lineStart: u.lineStart,
+        lineEnd: u.lineEnd,
+        textHash: u.hash,
+        revision: note.revision,
+        types: note.types,
+        folder,
+        vector: known.get(u.hash)!
+      }));
+      if (sameUnits(index.unitsOf(note.path), stored)) continue;
+      await store.saveNote(note.path, stored);
+      index.replaceNote(note.path, stored);
+      written += 1;
+    }
+    return written;
   }
 
   /** Deletes the note's vectors if it has any. Returns whether it did. */

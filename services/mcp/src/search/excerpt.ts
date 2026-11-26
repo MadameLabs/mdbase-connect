@@ -108,13 +108,19 @@ export function bestExcerpt(body: string, rawTerms: readonly string[]): Excerpt 
   return { text, lineStart: start + 1, lineEnd: end, heading: best.section.heading };
 }
 
-/** The body lines `lineStart..lineEnd` (1-based, inclusive), counted like the vector chunks are: split on `\r?\n`. */
-export function excerptAt(body: string, lineStart: number, lineEnd: number): Excerpt {
+/**
+ * The body lines `lineStart..lineEnd` (1-based, inclusive), counted like the vector chunks are: split on `\r?\n`.
+ * Beyond EXCERPT_MAX_CHARS the text is cut around the first line holding a term (else from the start),
+ * and the returned line range is the cut's.
+ */
+export function excerptAt(body: string, lineStart: number, lineEnd: number, terms: readonly string[] = []): Excerpt {
   const lines = body.split(/\r?\n/);
   const start = Math.min(Math.max(1, lineStart), lines.length);
   const end = Math.min(Math.max(start, lineEnd), lines.length);
   const section = splitSections(lines).find((s) => start - 1 >= s.start && start - 1 < s.end);
-  return { text: lines.slice(start - 1, end).join("\n"), lineStart: start, lineEnd: end, heading: section?.heading ?? null };
+  const lowered = terms.map((t) => t.toLowerCase()).filter(Boolean);
+  const cutRange = cut(lines, start - 1, end, lowered);
+  return { text: cutRange.text, lineStart: cutRange.start + 1, lineEnd: cutRange.end, heading: section?.heading ?? null };
 }
 
 export interface NoteRecord {
