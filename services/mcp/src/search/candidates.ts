@@ -4,8 +4,11 @@ export const PRE_SCORE_WEIGHTS = { title: 3, description: 2, path: 2, body: 1 } 
 export const MAX_CANDIDATES = 30;
 export const QUERY_LIMIT = 300;
 export const MAX_TERMS = 8;
-/** Long terms that get a body query of their own (the longest, ties by appearance). */
-export const BODY_TERMS = 4;
+/** Long terms that get a body query of their own in the reserve (the longest, ties by appearance). */
+export const BODY_TERMS = 8;
+/** Terms the exact-name search takes, and the time each term's body query gets. */
+export const MAX_EXACT_TERMS = 4;
+export const EXACT_TERMS_DEADLINE_MS = 1500;
 const LONG_TERM_MIN = 3;
 
 export interface Candidate {
@@ -94,12 +97,16 @@ export function folderRange(folder: string): string {
 
 type Field = keyof typeof PRE_SCORE_WEIGHTS;
 
-interface Row {
+/** What a query result says about a note: its path and the fields the candidates show. */
+interface Stored {
   path: string;
   title: string | null;
   description: string | null;
   types: string[];
   revision: string;
+}
+
+interface Row extends Stored {
   /** term -> fields it matched */
   matched: Map<string, Set<Field>>;
 }
@@ -116,21 +123,24 @@ function matchedFields(term: string, whole: boolean, path: string, title: string
 
 const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
-/** Candidates from one body query per long term (the BODY_TERMS longest, through the
- * FTS5 index, following its cursor) and one title/description/path query, sent
- * together. A term with more than QUERY_LIMIT body notes is common: its body is
- * dropped, since any slice of it is a path-ordered sample. */
-export async function gatherCandidates(
-  gateway: ConnectGateway,
-  connectionSetId: string,
-  connectionId: string,
-  query: string,
-  filters: { types?: string[]; folder?: string },
-  signal?: AbortSignal
-): Promise<{ candidates: Candidate[]; total: number }> {
-  const { long, short } = searchTerms(query);
-  if (long.length === 0 && short.length === 0) return { candidates: [], total: 0 };
+/** The note a query result describes, or null when it has no path. */
+function storedOf(item: unknown): Stored | null {
+  const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
+  if (typeof r?.path !== "string") return null;
+  return {
+    path: r.path,
+    title: asText(r.frontmatter?.title),
+    description: asText(r.frontmatter?.description),
+    types: Array.isArray(r.types) ? r.types.filter((t): t is string => typeof t === "string") : [],
+    revision: typeof r.revision === "string" ? r.revision : ""
+  };
+}
 
+type Filters = { types?: string[]; folder?: string };
+
+/** Reads through the gateway: one page of a query, and a term's whole body set. Shared by
+ * the candidate gatherers so each keeps the same query shape and cursor handling. */
+function queryReader(gateway: ConnectGateway, connectionSetId: string, connectionId: string, filters: Filters, signal?: AbortSignal) {
   const run = async (where: string, cursor?: string) => {
     // Plain query, not `output: "metadata"`: the hosted authority refuses metadata output
     // with a body condition (query_budget_exceeded) even for a handful of matches.
@@ -156,33 +166,107 @@ export async function gatherCandidates(
       cursor = page.next;
     }
   };
-  const meta = metaExpression(long, short);
-  const metaWhere = filters.folder
-    ? `(${meta}) && file.path.startsWith(${celString(filters.folder.endsWith("/") ? filters.folder : `${filters.folder}/`)})`
-    : meta;
+  return { run, bodyOf };
+}
+
+/** The title/description/path expression, narrowed to a folder by prefix. */
+function metaWhereOf(meta: string, folder?: string): string {
+  return folder ? `(${meta}) && file.path.startsWith(${celString(folder.endsWith("/") ? folder : `${folder}/`)})` : meta;
+}
+
+/** The body expression for one term, narrowed to a folder by path range. */
+function bodyWhereOf(term: string, folder?: string): string {
+  return folder ? `(${bodyExpression(term)}) && ${folderRange(folder)}` : bodyExpression(term);
+}
+
+/** A term's work races a timer: `done` with its value, or late (the timer won). */
+type WithinDeadline<T> = { done: true; value: T } | { done: false };
+
+function withinDeadline<T>(work: Promise<T>, ms: number): Promise<WithinDeadline<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<WithinDeadline<T>>((resolve) => {
+    timer = setTimeout(() => resolve({ done: false }), ms);
+  });
+  const done = work.then((value): WithinDeadline<T> => ({ done: true, value }));
+  return Promise.race([done, late]).finally(() => clearTimeout(timer));
+}
+
+export interface ExactPath {
+  title: string | null;
+  description: string | null;
+  types: string[];
+  revision: string;
+}
+
+/** Notes that hold the exact terms: one body query per long term (3 letters or more, through
+ * the index, following its cursor, nothing when common) and one title/description/path query
+ * with every term. A term whose body is not back by `deadlineMs` goes to `dropped` with its
+ * partial results discarded; the other terms still return. The title query is not raced. */
+export async function exactTermCandidates(
+  gateway: ConnectGateway,
+  connectionSetId: string,
+  connectionId: string,
+  terms: string[],
+  filters: Filters,
+  options: { deadlineMs: number; signal?: AbortSignal }
+): Promise<{ paths: Map<string, ExactPath>; dropped: string[] }> {
+  const kept = terms.slice(0, MAX_EXACT_TERMS);
+  const paths = new Map<string, ExactPath>();
+  if (kept.length === 0) return { paths, dropped: [] };
+  const longTerms = kept.filter((t) => Array.from(t).length >= LONG_TERM_MIN);
+  const shortTerms = kept.filter((t) => Array.from(t).length < LONG_TERM_MIN);
+  const { run, bodyOf } = queryReader(gateway, connectionSetId, connectionId, filters, options.signal);
+  const metaQuery = run(metaWhereOf(metaExpression(longTerms, shortTerms), filters.folder));
+  const bodyQueries = longTerms.map((term) => withinDeadline(bodyOf(bodyWhereOf(term, filters.folder)), options.deadlineMs));
+  const [metaPage, ...bodies] = await Promise.all([metaQuery, ...bodyQueries]);
+
+  const add = (item: unknown) => {
+    const stored = storedOf(item);
+    if (stored && !paths.has(stored.path)) {
+      paths.set(stored.path, { title: stored.title, description: stored.description, types: stored.types, revision: stored.revision });
+    }
+  };
+  metaPage.results.forEach(add);
+  const dropped: string[] = [];
+  bodies.forEach((body, i) => {
+    if (!body.done) dropped.push(longTerms[i]);
+    else if (body.value !== null) body.value.forEach(add);
+  });
+  return { paths, dropped };
+}
+
+/** Candidates from one body query per long term (the BODY_TERMS longest, through the
+ * FTS5 index, following its cursor) and one title/description/path query, sent
+ * together. A term with more than QUERY_LIMIT body notes is common: its body is
+ * dropped, since any slice of it is a path-ordered sample. */
+export async function gatherCandidates(
+  gateway: ConnectGateway,
+  connectionSetId: string,
+  connectionId: string,
+  query: string,
+  filters: Filters,
+  signal?: AbortSignal
+): Promise<{ candidates: Candidate[]; total: number }> {
+  const { long, short } = searchTerms(query);
+  if (long.length === 0 && short.length === 0) return { candidates: [], total: 0 };
+
+  const { run, bodyOf } = queryReader(gateway, connectionSetId, connectionId, filters, signal);
+  const metaWhere = metaWhereOf(metaExpression(long, short), filters.folder);
   const bodyTerms = long
     .map((term, at) => ({ term, at, len: Array.from(term).length }))
     .sort((x, y) => y.len - x.len || x.at - y.at)
     .slice(0, BODY_TERMS)
     .map((t) => t.term);
-  const bodyWhere = (term: string) => (filters.folder ? `(${bodyExpression(term)}) && ${folderRange(filters.folder)}` : bodyExpression(term));
-  const [metaPage, ...bodySets] = await Promise.all([run(metaWhere), ...bodyTerms.map((term) => bodyOf(bodyWhere(term)))]);
+  const [metaPage, ...bodySets] = await Promise.all([run(metaWhere), ...bodyTerms.map((term) => bodyOf(bodyWhereOf(term, filters.folder)))]);
 
   const rows = new Map<string, Row>();
   const rowFor = (item: unknown) => {
-    const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
-    if (typeof r?.path !== "string") return null;
-    let row = rows.get(r.path);
+    const stored = storedOf(item);
+    if (!stored) return null;
+    let row = rows.get(stored.path);
     if (!row) {
-      row = {
-        path: r.path,
-        title: asText(r.frontmatter?.title),
-        description: asText(r.frontmatter?.description),
-        types: Array.isArray(r.types) ? r.types.filter((t): t is string => typeof t === "string") : [],
-        revision: typeof r.revision === "string" ? r.revision : "",
-        matched: new Map()
-      };
-      rows.set(r.path, row);
+      row = { ...stored, matched: new Map() };
+      rows.set(stored.path, row);
     }
     return row;
   };

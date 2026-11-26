@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectGateway } from "../connect.js";
-import { BODY_TERMS, MAX_CANDIDATES, bodyExpression, folderRange, gatherCandidates, metaExpression, searchTerms } from "./candidates.js";
+import { BODY_TERMS, MAX_CANDIDATES, bodyExpression, exactTermCandidates, folderRange, gatherCandidates, metaExpression, searchTerms } from "./candidates.js";
 
 type Row = { path: string; types?: string[]; revision?: string; frontmatter?: Record<string, unknown> };
 const BODY_RE = /^\(?file\.body\.lower\(\)\.contains\("([^"]*)"\)/;
@@ -98,9 +98,12 @@ describe("gatherCandidates", () => {
   });
 
   it(`corpo só para os ${BODY_TERMS} termos longos mais longos`, async () => {
+    // searchTerms keeps MAX_TERMS (8) terms, so "abc" (the shortest) is cut before BODY_TERMS applies.
     const { gateway, operation } = fake({});
-    await gatherCandidates(gateway, "s", "c", "abcd abcdefgh abcde abcdefg abcdef", {});
-    expect(bodyWheres(operation).map((w) => BODY_RE.exec(w)?.[1]).sort()).toEqual(["abcde", "abcdef", "abcdefg", "abcdefgh"]);
+    await gatherCandidates(gateway, "s", "c", "abc abcd abcde abcdef abcdefg abcdefgh abcdefghi abcdefghij abcdefghijk", {});
+    expect(bodyWheres(operation).map((w) => BODY_RE.exec(w)?.[1]).sort()).toEqual([
+      "abcd", "abcde", "abcdef", "abcdefg", "abcdefgh", "abcdefghi", "abcdefghij", "abcdefghijk"
+    ]);
     expect(metaWhere(operation)).toContain('raw.title.lower().contains("abcd")');
   });
 
@@ -226,5 +229,71 @@ describe("gatherCandidates", () => {
   it("erro do gateway se propaga", async () => {
     const gateway = { operation: vi.fn(async () => { throw new Error("insufficient_collection_access"); }) } as unknown as ConnectGateway;
     await expect(gatherCandidates(gateway, "s", "c", "nota", {})).rejects.toThrow("insufficient_collection_access");
+  });
+});
+
+describe("exactTermCandidates", () => {
+  it("termos exatos: corpo por termo e meta com todos", async () => {
+    const { gateway, operation } = fake({
+      body: { fatura: [{ path: "a.md", types: ["task"], revision: "r1" }], cartão: [{ path: "b.md" }] },
+      meta: [{ path: "m.md", frontmatter: { title: "Fatura do cartão" } }]
+    });
+    const r = await exactTermCandidates(gateway, "s", "c", ["fatura", "cartão"], {}, { deadlineMs: 1500 });
+    expect(bodyWheres(operation).sort()).toEqual(['file.body.lower().contains("cartão")', 'file.body.lower().contains("fatura")']);
+    const meta = metaWhere(operation) as string;
+    expect(meta).toContain('raw.title.lower().contains("fatura")');
+    expect(meta).toContain('raw.title.lower().contains("cartão")');
+    expect(meta).not.toContain("file.body");
+    expect([...r.paths.keys()].sort()).toEqual(["a.md", "b.md", "m.md"]);
+    expect(r.paths.get("a.md")).toEqual({ title: null, description: null, types: ["task"], revision: "r1" });
+    expect(r.paths.get("m.md")).toEqual({ title: "Fatura do cartão", description: null, types: [], revision: "r" });
+    expect(r.dropped).toEqual([]);
+  });
+
+  it("sigla de 2 letras só na meta", async () => {
+    const { gateway, operation } = fake({ meta: [{ path: "x-pf.md", frontmatter: { title: "Regras PF" } }] });
+    const r = await exactTermCandidates(gateway, "s", "c", ["pf"], {}, { deadlineMs: 1500 });
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(wheres(operation)[0]).not.toContain("file.body");
+    expect(wheres(operation)[0]).toContain('file.path.lower().matches("(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)")');
+    expect([...r.paths.keys()]).toEqual(["x-pf.md"]);
+  });
+
+  it("termo comum acima de 300 descartado", async () => {
+    const rows = Array.from({ length: 301 }, (_, i) => ({ path: `r${i}.md` }));
+    const { gateway, operation } = fake({ body: { reuniao: rows, fatura: [{ path: "a.md" }] }, pageSize: 100 });
+    const r = await exactTermCandidates(gateway, "s", "c", ["reuniao", "fatura"], {}, { deadlineMs: 1500 });
+    const reuniao = bodyWheres(operation).filter((w) => w.includes('"reuniao"'));
+    expect(reuniao).toHaveLength(3);
+    expect([...r.paths.keys()]).toEqual(["a.md"]);
+    expect(r.dropped).toEqual([]);
+  });
+
+  it("termo que estoura o prazo vai para dropped e os outros voltam", async () => {
+    vi.useFakeTimers();
+    try {
+      const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
+        if (input.where === 'file.body.lower().contains("lento")') return new Promise<never>(() => {});
+        if (input.where === 'file.body.lower().contains("rapido")') {
+          return { results: [{ path: "r.md", types: [], revision: "r", frontmatter: {} }], meta: { has_more: false } };
+        }
+        return { results: [], meta: { has_more: false } };
+      });
+      const gateway = { operation } as unknown as ConnectGateway;
+      const pending = exactTermCandidates(gateway, "s", "c", ["lento", "rapido"], {}, { deadlineMs: 1500 });
+      await vi.advanceTimersByTimeAsync(1500);
+      const r = await pending;
+      expect(r.dropped).toEqual(["lento"]);
+      expect([...r.paths.keys()]).toEqual(["r.md"]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("reserva e prazo", () => {
+  it("BODY_TERMS é 8 na reserva", () => {
+    expect(BODY_TERMS).toBe(8);
   });
 });
