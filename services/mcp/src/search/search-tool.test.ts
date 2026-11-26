@@ -441,4 +441,37 @@ describe("search_records por sentido", () => {
       vi.useRealTimers();
     }
   });
+
+  it("as instruções do servidor ensinam query, terms e a preferência por notas vigentes", () => {
+    expect(SERVER_INSTRUCTIONS).toContain(
+      "When using search_records, put the subject in query in your own words (not the user's message pasted), exact names in terms, and prefer records that are not archived and more recent when two contradict each other."
+    );
+  });
+
+  it("leitura dos corpos falha no caminho semântico: cai na reserva sem vazar notas do índice", async () => {
+    const rows: Row[] = [{ path: "n/a.md", title: "A", body: "reuniao" }, { path: "n/b.md", title: "B", body: "reuniao", unreadable: true }];
+    const vectors = registryOf([{ path: "n/b.md", vec: [1, 0] }, { path: "n/a.md", vec: [0.5, 0.86] }]);
+    let reads = 0;
+    const gateway = fakeGateway(rows, ["query"], (_op, input) => {
+      if (String(input.where).startsWith("file.path in") && reads++ === 0) throw new Error("down");
+    }, ["n/a.md"]);
+    const { search } = await connect(gateway, { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "reuniao" });
+    expect(json.ranking_warning).toBe("semantic_unavailable");
+    // the reserve only knows what the caller's own queries return
+    expect(paths(json)).toEqual(["n/a.md"]);
+  });
+
+  it("consulta dos termos exatos rejeitada não derruba a busca: terms_timeout", async () => {
+    const rows: Row[] = [{ path: "n/a.md", title: "A", body: "a" }];
+    const vectors = registryOf([{ path: "n/a.md", vec: [1, 0] }]);
+    const gateway = fakeGateway(rows, ["query"], (_op, input) => {
+      if (!String(input.where).startsWith("file.path in")) throw new Error("boom");
+    });
+    const { search } = await connect(gateway, { jev: null, vectors, embedding: embedder() });
+    const { json, isError } = await search({ query: "x", terms: ["sudo"] });
+    expect(isError).toBe(false);
+    expect(paths(json)).toEqual(["n/a.md"]);
+    expect(json.ranking_warning).toBe("terms_timeout");
+  });
 });

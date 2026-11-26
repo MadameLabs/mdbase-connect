@@ -204,7 +204,13 @@ async function semanticPool(
         return null;
       }
     ),
-    exactTermCandidates(deps.gateway, deps.connectionSetId, connectionId, input.terms ?? [], filters, { deadlineMs: EXACT_TERMS_DEADLINE_MS, signal })
+    exactTermCandidates(deps.gateway, deps.connectionSetId, connectionId, input.terms ?? [], filters, { deadlineMs: EXACT_TERMS_DEADLINE_MS, signal }).catch(
+      (error: unknown) => {
+        if (signal?.aborted) throw error;
+        // The meaning search still answers; every term counts as late.
+        return { paths: new Map<string, ExactPath>(), dropped: (input.terms ?? []).filter((t) => t.trim() !== "") };
+      }
+    )
   ]);
   if (nearHits === null) return null;
   // A note both lists found goes ahead of those only the embedding found.
@@ -236,34 +242,50 @@ export async function searchRecords(deps: SearchDeps, connectionId: string, inpu
 
   const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
   const index = deps.vectors?.get(connection.collection_id) ?? null;
-  const semantic = index !== null && index.size() > 0 && deps.embedding
+  let semantic = index !== null && index.size() > 0 && deps.embedding
     ? await semanticPool(deps, connectionId, index, deps.embedding, input, signal)
     : null;
-  const pool: Pool = semantic ?? {
+  const reserve = async (): Promise<Pool> => ({
     ...(await gatherCandidates(gateway, connectionSetId, connectionId, input.query, { types: input.types, folder: input.folder }, signal)),
     near: new Map(), dropped: []
-  };
-  let candidates = pool.candidates;
+  });
+  let pool: Pool = semantic ?? (await reserve());
+  const readAll = () => readRecords(gateway, connectionSetId, connectionId, pool.candidates.map((c) => c.path), signal);
   const output: SearchOutput = {
     results: [], start_here: null, ranking: "pre_order",
-    candidates_considered: candidates.length, candidates_total: pool.total, truncated: false
+    candidates_considered: pool.candidates.length, candidates_total: pool.total, truncated: false
   };
   if (semantic === null) output.ranking_warning = "semantic_unavailable";
-  if (candidates.length === 0) return output;
+  if (pool.candidates.length === 0) return output;
+
+  let records = new Map<string, NoteRecord>();
+  try {
+    records = await readAll();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (semantic !== null) {
+      // Vector candidates are only safe once this connection has read them: use the caller's own queries instead.
+      semantic = null;
+      output.ranking_warning = "semantic_unavailable";
+      pool = await reserve();
+      output.candidates_total = pool.total;
+      if (pool.candidates.length === 0) return output;
+      try {
+        records = await readAll();
+      } catch (retryError) {
+        if (signal?.aborted) throw retryError;
+        output.excerpt_warning = "bodies_unavailable";
+      }
+    } else {
+      output.excerpt_warning = "bodies_unavailable";
+    }
+  }
+  // Semantic candidates come from vectors, which may hold notes this connection cannot read.
+  let candidates = semantic !== null ? pool.candidates.filter((c) => records.has(c.path)) : pool.candidates;
 
   // Peeks never wait: the first search of a connection may come without them.
   const indexes: IndexOption[] = deps.jev ? deps.indexList?.peek(connectionSetId, connectionId) ?? [] : [];
   const rulePaths = deps.folderRules?.peek(connectionSetId, connectionId) ?? null;
-
-  let records = new Map<string, NoteRecord>();
-  try {
-    records = await readRecords(gateway, connectionSetId, connectionId, candidates.map((c) => c.path), signal);
-    // Semantic candidates come from vectors, which may hold notes this connection cannot read.
-    if (semantic !== null) candidates = candidates.filter((c) => records.has(c.path));
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    output.excerpt_warning = "bodies_unavailable";
-  }
   output.candidates_considered = candidates.length;
   if (candidates.length === 0) return output;
 
