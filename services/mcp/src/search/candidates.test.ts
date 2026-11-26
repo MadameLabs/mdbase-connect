@@ -1,21 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectGateway } from "../connect.js";
-import { MAX_CANDIDATES, bodyExpression, folderRange, gatherCandidates, metaExpression, searchTerms } from "./candidates.js";
+import { BODY_TERMS, MAX_CANDIDATES, bodyExpression, folderRange, gatherCandidates, metaExpression, searchTerms } from "./candidates.js";
 
 type Row = { path: string; types?: string[]; revision?: string; frontmatter?: Record<string, unknown> };
-const isBodyWhere = (where: string) => where.replace(/^\(/, "").startsWith("file.body.lower().contains(");
-/** Two queries: the body query (index) gets `body`, the title/description/path one gets `meta`. */
-function fake(lists: { body?: Row[]; meta?: Row[]; bodyMeta?: Record<string, unknown> }) {
-  const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
-    const body = isBodyWhere(input.where);
-    const source = (body ? lists.body : lists.meta) ?? [];
+const BODY_RE = /^\(?file\.body\.lower\(\)\.contains\("([^"]*)"\)/;
+const isBodyWhere = (where: string) => BODY_RE.test(where);
+/** One body query per long term (`body[term]`, served `pageSize` rows a page with a
+ * numeric cursor) and one title/description/path query (`meta`). */
+function fake(lists: { body?: Record<string, Row[]>; meta?: Row[]; pageSize?: number }) {
+  const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string; cursor?: string }) => {
+    const m = BODY_RE.exec(input.where);
+    const all = (m ? lists.body?.[m[1]] : lists.meta) ?? [];
+    const size = m ? lists.pageSize ?? Infinity : Infinity;
+    const from = input.cursor ? Number(input.cursor) : 0;
+    const source = all.slice(from, from + size);
     const results = source.map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", frontmatter: r.frontmatter ?? {} }));
-    return { results, meta: body ? lists.bodyMeta ?? { has_more: false } : { has_more: false } };
+    const next = from + size < all.length ? String(from + size) : null;
+    return { results, meta: next ? { has_more: true, cursor: next } : { has_more: false } };
   });
   return { gateway: { operation } as unknown as ConnectGateway, operation };
 }
 const wheres = (op: ReturnType<typeof fake>["operation"]) => op.mock.calls.map((c) => (c[3] as { where: string }).where);
-const bodyWhere = (op: ReturnType<typeof fake>["operation"]) => wheres(op).find(isBodyWhere);
+const bodyWheres = (op: ReturnType<typeof fake>["operation"]) => wheres(op).filter(isBodyWhere);
 const metaWhere = (op: ReturnType<typeof fake>["operation"]) => wheres(op).find((w) => !isBodyWhere(w));
 
 describe("searchTerms", () => {
@@ -52,8 +58,8 @@ describe("searchTerms: teto", () => {
 });
 
 describe("expressões", () => {
-  it("bodyExpression junta os termos longos em OU, só com contains no corpo", () => {
-    expect(bodyExpression(["fatura", "cartão"])).toBe('file.body.lower().contains("fatura") || file.body.lower().contains("cartão")');
+  it("bodyExpression é só o contains do corpo, para o índice", () => {
+    expect(bodyExpression("cartão")).toBe('file.body.lower().contains("cartão")');
   });
   it("metaExpression testa título, descrição e caminho; sigla por fronteira de palavra", () => {
     const w = metaExpression(["fatura"], ["pf"]);
@@ -71,11 +77,11 @@ describe("expressões", () => {
 });
 
 describe("gatherCandidates", () => {
-  it("duas consultas: corpo com os termos longos em OU, meta com todos", async () => {
+  it("uma consulta de corpo por termo longo e uma de título, descrição e caminho", async () => {
     const { gateway, operation } = fake({});
     await gatherCandidates(gateway, "s", "c", "fatura cartão PF", {});
-    expect(operation).toHaveBeenCalledTimes(2);
-    expect(bodyWhere(operation)).toBe('file.body.lower().contains("fatura") || file.body.lower().contains("cartão")');
+    expect(operation).toHaveBeenCalledTimes(3);
+    expect(bodyWheres(operation).sort()).toEqual(['file.body.lower().contains("cartão")', 'file.body.lower().contains("fatura")']);
     const meta = metaWhere(operation) as string;
     expect(meta).toContain('raw.title.lower().contains("fatura")');
     expect(meta).toContain('raw.title.lower().contains("cartão")');
@@ -91,6 +97,13 @@ describe("gatherCandidates", () => {
     }
   });
 
+  it(`corpo só para os ${BODY_TERMS} termos longos mais longos`, async () => {
+    const { gateway, operation } = fake({});
+    await gatherCandidates(gateway, "s", "c", "abcd abcdefgh abcde abcdefg abcdef", {});
+    expect(bodyWheres(operation).map((w) => BODY_RE.exec(w)?.[1]).sort()).toEqual(["abcde", "abcdef", "abcdefg", "abcdefgh"]);
+    expect(metaWhere(operation)).toContain('raw.title.lower().contains("abcd")');
+  });
+
   it("só siglas: uma consulta, sem corpo", async () => {
     const { gateway, operation } = fake({ meta: [{ path: "x-pf.md", frontmatter: { title: "Regras PF" } }, { path: "y.md", frontmatter: { description: "sobre PJ" } }] });
     const r = await gatherCandidates(gateway, "s", "c", "PF PJ", {});
@@ -100,20 +113,15 @@ describe("gatherCandidates", () => {
     expect(r.candidates.map((c) => c.path).sort()).toEqual(["x-pf.md", "y.md"]);
   });
 
-  it("pasta vira faixa de caminho na consulta do corpo", async () => {
+  it("pasta vira faixa de caminho em cada consulta do corpo", async () => {
     const { gateway, operation } = fake({});
-    await gatherCandidates(gateway, "s", "c", "nota", { types: ["task"], folder: "13-engenharia" });
-    const body = bodyWhere(operation) as string;
-    expect(body).toBe('(file.body.lower().contains("nota")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")');
-    expect(body).not.toContain("startsWith");
+    await gatherCandidates(gateway, "s", "c", "fatura cartão", { types: ["task"], folder: "13-engenharia" });
+    expect(bodyWheres(operation).sort()).toEqual([
+      '(file.body.lower().contains("cartão")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")',
+      '(file.body.lower().contains("fatura")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")'
+    ]);
     expect(metaWhere(operation)).toContain('file.path.startsWith("13-engenharia/")');
     for (const c of operation.mock.calls) expect((c[3] as unknown as { types: string[] }).types).toEqual(["task"]);
-  });
-
-  it("pasta vale para todos os termos do corpo, não só o último", async () => {
-    const { gateway, operation } = fake({});
-    await gatherCandidates(gateway, "s", "c", "fatura cartão", { folder: "13-engenharia" });
-    expect(bodyWhere(operation)).toBe('(file.body.lower().contains("fatura") || file.body.lower().contains("cartão")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")');
   });
 
   it("escapa aspas e barras do literal da pasta", async () => {
@@ -122,33 +130,45 @@ describe("gatherCandidates", () => {
     expect(metaWhere(operation)).toContain('startsWith("a\\"b\\\\c/")');
   });
 
-  it("has_more ou cursor não refaz consulta", async () => {
-    const { gateway, operation } = fake({ body: [{ path: "a.md" }], bodyMeta: { has_more: true, cursor: "x" } });
-    const r = await gatherCandidates(gateway, "s", "c", "reuniao", {});
-    expect(operation).toHaveBeenCalledTimes(2);
+  it("termo médio: o corpo segue o cursor até o fim", async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ path: `s${i}.md` }));
+    const { gateway, operation } = fake({ body: { sudo: rows }, pageSize: 2 });
+    const r = await gatherCandidates(gateway, "s", "c", "sudo", {});
+    const sudoCalls = operation.mock.calls.filter((c) => isBodyWhere((c[3] as { where: string }).where));
+    expect(sudoCalls.map((c) => (c[3] as { cursor?: string }).cursor)).toEqual([undefined, "2", "4"]);
+    for (const c of sudoCalls) expect((c[3] as { where: string }).where).toBe('file.body.lower().contains("sudo")');
+    expect(r.total).toBe(5);
+    expect(r.candidates.every((c) => c.hits.body === 1)).toBe(true);
+  });
+
+  it("termo comum (mais de 300 notas no corpo): descartado, sem passar de 300", async () => {
+    const rows = Array.from({ length: 301 }, (_, i) => ({ path: `r${i}.md` }));
+    const { gateway, operation } = fake({ body: { reuniao: rows, fatura: [{ path: "a.md" }] }, pageSize: 100 });
+    const r = await gatherCandidates(gateway, "s", "c", "reuniao fatura", {});
+    const reuniao = operation.mock.calls.filter((c) => (c[3] as { where: string }).where.includes('"reuniao")') && isBodyWhere((c[3] as { where: string }).where));
+    expect(reuniao).toHaveLength(3);
     expect(r.candidates.map((c) => c.path)).toEqual(["a.md"]);
   });
 
-  it("nota nas duas respostas é uma candidata", async () => {
+  it("corpo conta por termo, só onde o termo não bateu fora dele", async () => {
     const a = { path: "a.md", frontmatter: { title: "Fatura" } };
-    const { gateway } = fake({ body: [a], meta: [a] });
+    const { gateway } = fake({ body: { fatura: [a], cartão: [a] }, meta: [a] });
     const r = await gatherCandidates(gateway, "s", "c", "fatura cartão", {});
     expect(r.total).toBe(1);
-    expect(r.candidates).toHaveLength(1);
     expect(r.candidates[0]).toMatchObject({ preScore: 4, hits: { title: 1, description: 0, path: 0, body: 1 } });
   });
 
-  it("corpo não soma quando todos os termos longos já bateram fora dele", async () => {
+  it("termo no título e no corpo conta só o peso do título", async () => {
     const a = { path: "a.md", frontmatter: { title: "Fatura" } };
-    const { gateway } = fake({ body: [a], meta: [a] });
+    const { gateway } = fake({ body: { fatura: [a] }, meta: [a] });
     const r = await gatherCandidates(gateway, "s", "c", "fatura", {});
     expect(r.candidates[0].preScore).toBe(3);
     expect(r.candidates[0].hits).toEqual({ title: 1, description: 0, path: 0, body: 0 });
   });
 
-  it("nota só do corpo vale 1 e total conta notas distintas", async () => {
+  it("nota só do corpo vale 1 por termo e total conta notas distintas", async () => {
     const b = { path: "b.md", frontmatter: { title: "Fatura" } };
-    const { gateway } = fake({ body: [{ path: "a.md" }, b], meta: [b] });
+    const { gateway } = fake({ body: { fatura: [{ path: "a.md" }, b] }, meta: [b] });
     const r = await gatherCandidates(gateway, "s", "c", "fatura", {});
     expect(r.total).toBe(2);
     expect(r.candidates.map((c) => [c.path, c.preScore])).toEqual([["b.md", 3], ["a.md", 1]]);
@@ -156,7 +176,7 @@ describe("gatherCandidates", () => {
   });
 
   it("nota sem title nem description que bate no corpo continua candidata", async () => {
-    const { gateway } = fake({ body: [{ path: "a.md", frontmatter: {} }] });
+    const { gateway } = fake({ body: { cartão: [{ path: "a.md", frontmatter: {} }] } });
     const r = await gatherCandidates(gateway, "s", "c", "cartão", {});
     expect(r.candidates).toHaveLength(1);
     expect(r.candidates[0]).toMatchObject({ path: "a.md", title: null, description: null, hits: { body: 1, title: 0 }, preScore: 1 });
@@ -164,14 +184,14 @@ describe("gatherCandidates", () => {
 
   it("soma o maior peso por termo distinto e desempata por número de termos", async () => {
     const um = { path: "um.md", frontmatter: { title: "fatura" } };
-    const { gateway } = fake({ body: [{ path: "dois.md" }], meta: [um] });
+    const { gateway } = fake({ body: { fatura: [{ path: "dois.md" }], cartão: [{ path: "dois.md" }, { path: "tres.md" }] }, meta: [um] });
     const r = await gatherCandidates(gateway, "s", "c", "fatura cartão", {});
-    expect(r.candidates.map((c) => [c.path, c.preScore])).toEqual([["um.md", 3], ["dois.md", 1]]);
+    expect(r.candidates.map((c) => [c.path, c.preScore])).toEqual([["um.md", 3], ["dois.md", 2], ["tres.md", 1]]);
   });
 
   it("mais de 30 candidatas: devolve 30 e total real", async () => {
     const rows = Array.from({ length: 45 }, (_, i) => ({ path: `n${i}.md` }));
-    const { gateway } = fake({ body: rows });
+    const { gateway } = fake({ body: { nota: rows } });
     const r = await gatherCandidates(gateway, "s", "c", "nota", {});
     expect(r.candidates).toHaveLength(MAX_CANDIDATES);
     expect(r.total).toBe(45);
@@ -198,7 +218,7 @@ describe("gatherCandidates", () => {
   });
 
   it("types vêm do resultado, ou vazio", async () => {
-    const { gateway } = fake({ body: [{ path: "a.md", types: ["task"] }, { path: "b.md" }] });
+    const { gateway } = fake({ body: { nota: [{ path: "a.md", types: ["task"] }, { path: "b.md" }] } });
     const r = await gatherCandidates(gateway, "s", "c", "nota", {});
     expect(r.candidates.map((c) => c.types).sort()).toEqual([[], ["task"]]);
   });

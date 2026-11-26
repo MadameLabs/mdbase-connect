@@ -4,6 +4,8 @@ export const PRE_SCORE_WEIGHTS = { title: 3, description: 2, path: 2, body: 1 } 
 export const MAX_CANDIDATES = 30;
 export const QUERY_LIMIT = 300;
 export const MAX_TERMS = 8;
+/** Long terms that get a body query of their own (the longest, ties by appearance). */
+export const BODY_TERMS = 4;
 const LONG_TERM_MIN = 3;
 
 export interface Candidate {
@@ -65,10 +67,10 @@ function test(field: string, term: string, whole: boolean): string {
   return whole ? `${field}.lower().matches(${lit})` : `${field}.lower().contains(${lit})`;
 }
 
-/** The body query: every long term in OR, nothing else, so the runtime answers it
+/** The body query for one term: nothing but this clause, so the runtime answers it
  * from its FTS5 body index (any other clause in the expression makes it a scan). */
-export function bodyExpression(long: string[]): string {
-  return long.map((t) => `file.body.lower().contains(${celString(t)})`).join(" || ");
+export function bodyExpression(term: string): string {
+  return `file.body.lower().contains(${celString(term)})`;
 }
 
 /** Title, description and path for every term in one expression: long terms by
@@ -114,9 +116,10 @@ function matchedFields(term: string, whole: boolean, path: string, title: string
 
 const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
-/** Candidates from two queries sent together: the body query (first page of the FTS5
- * index only, in path order; its cursor is ignored) and the title/description/path
- * query. A body hit is credited once, without knowing which term matched. */
+/** Candidates from one body query per long term (the BODY_TERMS longest, through the
+ * FTS5 index, following its cursor) and one title/description/path query, sent
+ * together. A term with more than QUERY_LIMIT body notes is common: its body is
+ * dropped, since any slice of it is a path-ordered sample. */
 export async function gatherCandidates(
   gateway: ConnectGateway,
   connectionSetId: string,
@@ -128,23 +131,44 @@ export async function gatherCandidates(
   const { long, short } = searchTerms(query);
   if (long.length === 0 && short.length === 0) return { candidates: [], total: 0 };
 
-  const run = async (where: string) => {
+  const run = async (where: string, cursor?: string) => {
     // Plain query, not `output: "metadata"`: the hosted authority refuses metadata output
     // with a body condition (query_budget_exceeded) even for a handful of matches.
     const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
     if (filters.types && filters.types.length > 0) input.types = filters.types;
+    if (cursor) input.cursor = cursor;
     const page = (await gateway.operation(connectionSetId, connectionId, "query", input, { signal })) as
-      { results?: unknown } | null;
-    return Array.isArray(page?.results) ? page.results : [];
+      { results?: unknown; meta?: { has_more?: unknown; cursor?: unknown } | null } | null;
+    const more = page?.meta?.has_more === true || (typeof page?.meta?.cursor === "string" && page.meta.cursor !== "");
+    const next = typeof page?.meta?.cursor === "string" && page.meta.cursor !== "" ? page.meta.cursor : null;
+    return { results: Array.isArray(page?.results) ? page.results : [], more, next };
+  };
+  // A term's whole body set, page by page, while it stays within QUERY_LIMIT notes;
+  // null when it is common (more than that, or more without a cursor to follow).
+  const bodyOf = async (where: string): Promise<unknown[] | null> => {
+    const all: unknown[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await run(where, cursor);
+      all.push(...page.results);
+      if (!page.more) return all;
+      if (all.length >= QUERY_LIMIT || page.next === null) return null;
+      cursor = page.next;
+    }
   };
   const meta = metaExpression(long, short);
   const metaWhere = filters.folder
     ? `(${meta}) && file.path.startsWith(${celString(filters.folder.endsWith("/") ? filters.folder : `${filters.folder}/`)})`
     : meta;
-  const bodyWhere = long.length === 0 ? null : filters.folder ? `(${bodyExpression(long)}) && ${folderRange(filters.folder)}` : bodyExpression(long);
-  const [metaResults, bodyResults] = await Promise.all([run(metaWhere), bodyWhere === null ? Promise.resolve([]) : run(bodyWhere)]);
+  const bodyTerms = long
+    .map((term, at) => ({ term, at, len: Array.from(term).length }))
+    .sort((x, y) => y.len - x.len || x.at - y.at)
+    .slice(0, BODY_TERMS)
+    .map((t) => t.term);
+  const bodyWhere = (term: string) => (filters.folder ? `(${bodyExpression(term)}) && ${folderRange(filters.folder)}` : bodyExpression(term));
+  const [metaPage, ...bodySets] = await Promise.all([run(metaWhere), ...bodyTerms.map((term) => bodyOf(bodyWhere(term)))]);
 
-  const rows = new Map<string, Row & { body: boolean }>();
+  const rows = new Map<string, Row>();
   const rowFor = (item: unknown) => {
     const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
     if (typeof r?.path !== "string") return null;
@@ -156,14 +180,13 @@ export async function gatherCandidates(
         description: asText(r.frontmatter?.description),
         types: Array.isArray(r.types) ? r.types.filter((t): t is string => typeof t === "string") : [],
         revision: typeof r.revision === "string" ? r.revision : "",
-        matched: new Map(),
-        body: false
+        matched: new Map()
       };
       rows.set(r.path, row);
     }
     return row;
   };
-  for (const item of metaResults) {
+  for (const item of metaPage.results) {
     const row = rowFor(item);
     if (!row) continue;
     for (const [term, whole] of [...long.map((t) => [t, false] as const), ...short.map((t) => [t, true] as const)]) {
@@ -171,14 +194,15 @@ export async function gatherCandidates(
       if (fields.size > 0) row.matched.set(term, fields);
     }
   }
-  for (const item of bodyResults) {
-    const row = rowFor(item);
-    if (row) row.body = true;
-  }
-  for (const row of rows.values()) {
-    // Credit the body once, unless every long term already matched outside it.
-    if (row.body && !long.every((t) => row.matched.has(t))) row.matched.set("<body>", new Set<Field>(["body"]));
-  }
+  bodySets.forEach((set, i) => {
+    if (set === null) return;
+    const term = bodyTerms[i];
+    for (const item of set) {
+      const row = rowFor(item);
+      // The body counts for a term only where the term matched nothing else.
+      if (row && !row.matched.has(term)) row.matched.set(term, new Set<Field>(["body"]));
+    }
+  });
 
   const candidates: Candidate[] = [];
   for (const row of rows.values()) {
