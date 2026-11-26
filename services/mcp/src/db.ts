@@ -203,6 +203,30 @@ export async function migrate(db: DatabaseQueryable): Promise<void> {
     CREATE INDEX IF NOT EXISTS mcp_call_log_collection_created_idx ON mcp_call_log (collection_id, created_at);
     CREATE INDEX IF NOT EXISTS mcp_call_log_client_created_idx ON mcp_call_log (client_id, created_at);
   `);
+  // Vectors hold no text: the note text goes to the embedding model and nowhere else.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS mcp_embedding_vectors (
+      collection_id uuid NOT NULL,
+      model text NOT NULL,
+      path text NOT NULL,
+      kind text NOT NULL,
+      line_start integer NOT NULL,
+      line_end integer NOT NULL,
+      text_hash text NOT NULL,
+      revision text NOT NULL,
+      types jsonb NOT NULL,
+      folder text NOT NULL,
+      vector bytea NOT NULL,
+      PRIMARY KEY (collection_id, model, path, kind, line_start)
+    );
+    CREATE TABLE IF NOT EXISTS mcp_embedding_state (
+      collection_id uuid NOT NULL,
+      model text NOT NULL,
+      cursor text,
+      indexed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (collection_id, model)
+    );
+  `);
   // Retain the unused legacy column until the previous release is outside the
   // production rollback window. Runtime compatibility is not a license for a
   // destructive deploy-time migration.
