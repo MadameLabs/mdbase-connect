@@ -295,7 +295,7 @@ function registryOf(entries: Vec[]): VectorRegistry {
   for (const e of entries) {
     const slash = e.path.lastIndexOf("/");
     index.replaceNote(e.path, [{
-      path: e.path, kind: e.kind ?? "chunk", lineStart: e.lines?.[0] ?? 1, lineEnd: e.lines?.[1] ?? 1, textHash: "h", revision: "r1",
+      path: e.path, kind: e.kind ?? "chunk", seq: e.kind === "card" ? 0 : 1, lineStart: e.lines?.[0] ?? 1, lineEnd: e.lines?.[1] ?? 1, textHash: "h", revision: "r1",
       types: e.types ?? ["note"], folder: slash < 0 ? "" : e.path.slice(0, slash), vector: Float32Array.from(e.vec)
     }]);
   }

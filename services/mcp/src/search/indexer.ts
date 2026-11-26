@@ -80,7 +80,7 @@ function toRecord(item: unknown): NoteRecord | null {
 /** Same hashes, lines, revision, types and folder: nothing to write. */
 function sameUnits(a: StoredUnit[], b: StoredUnit[]): boolean {
   if (a.length !== b.length) return false;
-  const key = (u: StoredUnit) => JSON.stringify([u.kind, u.lineStart, u.lineEnd, u.textHash, u.revision, u.types, u.folder]);
+  const key = (u: StoredUnit) => JSON.stringify([u.kind, u.seq, u.lineStart, u.lineEnd, u.textHash, u.revision, u.types, u.folder]);
   const left = a.map(key).sort();
   const right = b.map(key).sort();
   return left.every((k, i) => k === right[i]);
@@ -243,6 +243,7 @@ export class EmbeddingIndexer {
     const stored: StoredUnit[] = units.map((u) => ({
       path: note.path,
       kind: u.kind,
+      seq: u.seq,
       lineStart: u.lineStart,
       lineEnd: u.lineEnd,
       textHash: u.hash,

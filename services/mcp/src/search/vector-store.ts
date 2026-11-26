@@ -4,6 +4,8 @@ import type { DatabaseConnection, DatabasePool } from "../db.js";
 export interface StoredUnit {
   path: string;
   kind: "card" | "chunk";
+  /** Order of the unit in the note: 0 for the card, 1.. for the chunks. */
+  seq: number;
   lineStart: number;
   lineEnd: number;
   textHash: string;
@@ -178,6 +180,7 @@ export class VectorRegistry {
 interface VectorRow {
   path: string;
   kind: "card" | "chunk";
+  seq: number;
   line_start: number;
   line_end: number;
   text_hash: string;
@@ -201,9 +204,9 @@ export class PgVectorStore {
 
   async load(): Promise<VectorIndex> {
     const { rows } = await this.db.query<VectorRow>(
-      `SELECT path, kind, line_start, line_end, text_hash, revision, types, folder, vector
+      `SELECT path, kind, seq, line_start, line_end, text_hash, revision, types, folder, vector
        FROM mcp_embedding_vectors WHERE collection_id = $1 AND model = $2
-       ORDER BY path, kind, line_start`,
+       ORDER BY path, kind, seq`,
       [this.collectionId, this.model]
     );
     const byPath = new Map<string, StoredUnit[]>();
@@ -212,6 +215,7 @@ export class PgVectorStore {
       units.push({
         path: row.path,
         kind: row.kind,
+        seq: row.seq,
         lineStart: row.line_start,
         lineEnd: row.line_end,
         textHash: row.text_hash,
@@ -237,12 +241,13 @@ export class PgVectorStore {
       if (units.length === 0) return;
       const values: unknown[] = [];
       const tuples = units.map((u, i) => {
-        const base = i * 11;
+        const base = i * 12;
         values.push(
           this.collectionId,
           this.model,
           u.path,
           u.kind,
+          u.seq,
           u.lineStart,
           u.lineEnd,
           u.textHash,
@@ -251,10 +256,10 @@ export class PgVectorStore {
           u.folder,
           float32ToBytes(u.vector)
         );
-        return `($${base + 1}::uuid, $${base + 2}::text, $${base + 3}::text, $${base + 4}::text, $${base + 5}::integer, $${base + 6}::integer, $${base + 7}::text, $${base + 8}::text, $${base + 9}::jsonb, $${base + 10}::text, $${base + 11}::bytea)`;
+        return `($${base + 1}::uuid, $${base + 2}::text, $${base + 3}::text, $${base + 4}::text, $${base + 5}::integer, $${base + 6}::integer, $${base + 7}::integer, $${base + 8}::text, $${base + 9}::text, $${base + 10}::jsonb, $${base + 11}::text, $${base + 12}::bytea)`;
       });
       await client.query(
-        `INSERT INTO mcp_embedding_vectors (collection_id, model, path, kind, line_start, line_end, text_hash, revision, types, folder, vector)
+        `INSERT INTO mcp_embedding_vectors (collection_id, model, path, kind, seq, line_start, line_end, text_hash, revision, types, folder, vector)
          VALUES ${tuples.join(", ")}`,
         values
       );

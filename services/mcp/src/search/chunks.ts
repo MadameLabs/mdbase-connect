@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 /** A piece of text sent to the embedding model: the note card or one body chunk. */
 export interface EmbedUnit {
   kind: "card" | "chunk";
+  /** Order of the unit in the note: 0 for the card, 1.. for the chunks. Unique within a note. */
+  seq: number;
   text: string;
   /** 1-based body line numbers, as read_record counts them; 0 for the card. */
   lineStart: number;
@@ -39,8 +41,8 @@ function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-function unit(kind: EmbedUnit["kind"], text: string, lineStart: number, lineEnd: number, heading: string | null): EmbedUnit {
-  return { kind, text, lineStart, lineEnd, heading, hash: sha256(text) };
+function unit(kind: EmbedUnit["kind"], seq: number, text: string, lineStart: number, lineEnd: number, heading: string | null): EmbedUnit {
+  return { kind, seq, text, lineStart, lineEnd, heading, hash: sha256(text) };
 }
 
 /** Collapses a scalar to one clean line, turning [[x]] and [[x|alias]] into x. */
@@ -87,7 +89,7 @@ export function noteCard(path: string, frontmatter: Record<string, unknown>): Em
   const lines = fields
     .filter(([, items]) => items.length > 0)
     .map(([label, items]) => `${label}: ${items.join(", ")}`);
-  return unit("card", lines.join("\n"), 0, 0, null);
+  return unit("card", 0, lines.join("\n"), 0, 0, null);
 }
 
 /** Splits the body into sections at Markdown headings, ignoring headings inside code fences. */
@@ -167,11 +169,19 @@ function pack(items: Piece[], separator: string): Piece[] {
   return out;
 }
 
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
 /** Cuts a single line into pieces of at most CHUNK_MAX_CHARS characters. */
 function cutLine(line: string, lineNumber: number): Piece[] {
   const pieces: Piece[] = [];
-  for (let offset = 0; offset < line.length; offset += CHUNK_MAX_CHARS) {
-    pieces.push({ text: line.slice(offset, offset + CHUNK_MAX_CHARS), start: lineNumber, end: lineNumber });
+  for (let offset = 0; offset < line.length; ) {
+    let end = Math.min(offset + CHUNK_MAX_CHARS, line.length);
+    // Never split a surrogate pair (an emoji) between two pieces.
+    if (end < line.length && isHighSurrogate(line.charCodeAt(end - 1))) end -= 1;
+    pieces.push({ text: line.slice(offset, end), start: lineNumber, end: lineNumber });
+    offset = end;
   }
   return pieces;
 }
@@ -232,7 +242,7 @@ export function bodyChunks(path: string, title: string, body: string): EmbedUnit
         : splitByParagraph(lines, section.start, section.end);
     for (const piece of pieces) {
       const label = [prefixTitle, area, section.trail].filter(Boolean).join(" — ");
-      units.push(unit("chunk", `${label}\n\n${piece.text}`, piece.start, piece.end, section.trail));
+      units.push(unit("chunk", units.length + 1, `${label}\n\n${piece.text}`, piece.start, piece.end, section.trail));
     }
   }
   return units;

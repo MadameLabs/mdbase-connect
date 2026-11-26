@@ -210,6 +210,7 @@ export async function migrate(db: DatabaseQueryable): Promise<void> {
       model text NOT NULL,
       path text NOT NULL,
       kind text NOT NULL,
+      seq integer NOT NULL,
       line_start integer NOT NULL,
       line_end integer NOT NULL,
       text_hash text NOT NULL,
@@ -217,7 +218,7 @@ export async function migrate(db: DatabaseQueryable): Promise<void> {
       types jsonb NOT NULL,
       folder text NOT NULL,
       vector bytea NOT NULL,
-      PRIMARY KEY (collection_id, model, path, kind, line_start)
+      PRIMARY KEY (collection_id, model, path, kind, seq)
     );
     CREATE TABLE IF NOT EXISTS mcp_embedding_state (
       collection_id uuid NOT NULL,

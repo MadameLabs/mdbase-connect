@@ -14,6 +14,7 @@ function unit(path: string, overrides: Partial<StoredUnit> = {}): StoredUnit {
   return {
     path,
     kind: "chunk",
+    seq: overrides.kind === "card" ? 0 : (overrides.lineStart ?? 1),
     lineStart: 1,
     lineEnd: 5,
     textHash: `hash-${path}-${overrides.lineStart ?? 1}`,
@@ -154,6 +155,8 @@ function fakeVectorDb() {
       for (let i = 0; i < values.length; i += columns.length) {
         const row: Row = {};
         columns.forEach((column, j) => (row[column] = values[i + j]));
+        const key = (r: Row) => [r.collection_id, r.model, r.path, r.kind, r.seq].join("|");
+        if (vectors.some((v) => key(v) === key(row))) throw new Error("duplicate key value violates unique constraint");
         vectors.push(row);
       }
       return { rows: [], rowCount: values.length / columns.length };
@@ -252,13 +255,26 @@ describe("PgVectorStore", () => {
     expect(insert).toBeDefined();
     const columns = /\(([^)]*)\)\s+VALUES/.exec(insert!.text)![1].split(",").map((c) => c.trim());
     expect(columns).toEqual([
-      "collection_id", "model", "path", "kind", "line_start", "line_end",
+      "collection_id", "model", "path", "kind", "seq", "line_start", "line_end",
       "text_hash", "revision", "types", "folder", "vector"
     ]);
     expect(columns).not.toContain("text");
     expect(columns).not.toContain("heading_hash");
     expect(Buffer.isBuffer(db.vectors[0].vector)).toBe(true);
     expect((db.vectors[0].vector as Buffer).byteLength).toBe(8);
+  });
+
+  it("unidades de uma linha longa, com o mesmo lineStart, gravam com seq diferente", async () => {
+    const db = fakeVectorDb();
+    const store = new PgVectorStore(db as never, COLLECTION, MODEL);
+
+    await store.saveNote("a/nota.md", [
+      unit("a/nota.md", { seq: 1, lineStart: 3, lineEnd: 3, textHash: "h-1" }),
+      unit("a/nota.md", { seq: 2, lineStart: 3, lineEnd: 3, textHash: "h-2" })
+    ]);
+
+    expect(db.vectors.map((r) => r.seq)).toEqual([1, 2]);
+    expect((await new PgVectorStore(db as never, COLLECTION, MODEL).load()).size()).toBe(2);
   });
 
   it("renameNote e deleteNote mudam e apagam as linhas do banco", async () => {
@@ -287,6 +303,7 @@ describe("migrate das tabelas de vetores", () => {
 
     expect(names).toContain("vector");
     expect(names).toContain("folder");
+    expect(names).toContain("seq");
     expect(names).not.toContain("text");
     expect(names).not.toContain("heading_hash");
     await expect(db.query("SELECT cursor FROM mcp_embedding_state")).resolves.toBeDefined();

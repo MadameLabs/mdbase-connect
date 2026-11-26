@@ -128,3 +128,26 @@ describe("hash", () => {
     expect(a.hash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+describe("seq das unidades", () => {
+  it("nota com linha de 5.600 caracteres tem seq único: 0 no cartão, 1.. nos trechos", () => {
+    const body = `# T\n\n${"palavra ".repeat(800)}\n\nfim`;
+    const units = embedUnits("a/nota.md", { title: "Nota" }, body);
+    expect(units.length).toBeGreaterThan(3);
+    expect(units.map((u) => u.seq)).toEqual(units.map((_, i) => i));
+    expect(new Set(units.map((u) => u.seq)).size).toBe(units.length);
+  });
+});
+
+describe("corte de linha longa", () => {
+  it("não parte par substituto (emoji) no limite", () => {
+    const body = "a".repeat(CHUNK_MAX_CHARS - 1) + "😀".repeat(10) + "b".repeat(50);
+    const chunks = bodyChunks("a/n.md", "N", body);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      const t = semPrefixo(c.text);
+      expect(t).not.toMatch(/(?:^|[^\ud800-\udbff])[\udc00-\udfff]/);
+      expect(t).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+    }
+  });
+});
