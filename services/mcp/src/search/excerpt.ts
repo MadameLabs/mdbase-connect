@@ -108,16 +108,36 @@ export function bestExcerpt(body: string, rawTerms: readonly string[]): Excerpt 
   return { text, lineStart: start + 1, lineEnd: end, heading: best.section.heading };
 }
 
-/** One `query` for all paths, with bodies. Missing or non-string bodies are skipped. */
-export async function readBodies(
+/**
+ * The body lines `lineStart..lineEnd` (1-based, inclusive), counted like the vector chunks are: split on `\r?\n`.
+ * Beyond EXCERPT_MAX_CHARS the text is cut around the first line holding a term (else from the start),
+ * and the returned line range is the cut's.
+ */
+export function excerptAt(body: string, lineStart: number, lineEnd: number, terms: readonly string[] = []): Excerpt {
+  const lines = body.split(/\r?\n/);
+  const start = Math.min(Math.max(1, lineStart), lines.length);
+  const end = Math.min(Math.max(start, lineEnd), lines.length);
+  const section = splitSections(lines).find((s) => start - 1 >= s.start && start - 1 < s.end);
+  const lowered = terms.map((t) => t.toLowerCase()).filter(Boolean);
+  const cutRange = cut(lines, start - 1, end, lowered);
+  return { text: cutRange.text, lineStart: cutRange.start + 1, lineEnd: cutRange.end, heading: section?.heading ?? null };
+}
+
+export interface NoteRecord {
+  body: string;
+  frontmatter: Record<string, unknown>;
+}
+
+/** One `query` for all paths, with bodies and frontmatter. Missing or non-string bodies are skipped. */
+export async function readRecords(
   gateway: ConnectGateway,
   connectionSetId: string,
   connectionId: string,
   paths: readonly string[],
   signal?: AbortSignal
-): Promise<Map<string, string>> {
-  const bodies = new Map<string, string>();
-  if (paths.length === 0) return bodies;
+): Promise<Map<string, NoteRecord>> {
+  const records = new Map<string, NoteRecord>();
+  if (paths.length === 0) return records;
   const where = `file.path in [${paths.map(celString).join(", ")}]`;
   const page = await gateway.operation(
     connectionSetId,
@@ -127,10 +147,24 @@ export async function readBodies(
     { signal }
   );
   const results = (page as { results?: unknown } | null)?.results;
-  if (!Array.isArray(results)) return bodies;
+  if (!Array.isArray(results)) return records;
   for (const item of results) {
-    const r = item as { path?: unknown; body?: unknown };
-    if (typeof r?.path === "string" && typeof r.body === "string") bodies.set(r.path, r.body);
+    const r = item as { path?: unknown; body?: unknown; frontmatter?: unknown };
+    if (typeof r?.path !== "string" || typeof r.body !== "string") continue;
+    const fm = r.frontmatter;
+    records.set(r.path, { body: r.body, frontmatter: fm !== null && typeof fm === "object" && !Array.isArray(fm) ? (fm as Record<string, unknown>) : {} });
   }
-  return bodies;
+  return records;
+}
+
+/** Bodies only: a thin view over readRecords. */
+export async function readBodies(
+  gateway: ConnectGateway,
+  connectionSetId: string,
+  connectionId: string,
+  paths: readonly string[],
+  signal?: AbortSignal
+): Promise<Map<string, string>> {
+  const records = await readRecords(gateway, connectionSetId, connectionId, paths, signal);
+  return new Map([...records].map(([path, record]) => [path, record.body]));
 }

@@ -7,24 +7,31 @@ import type { FolderRulesCache } from "../folder-rules.js";
 import { createMcpServer, SERVER_INSTRUCTIONS } from "../mcp.js";
 import type { OAuthService } from "../oauth.js";
 import type { IndexListCache, IndexOption } from "./indexes.js";
+import { EmbeddingError, type EmbeddingClient } from "./embeddings.js";
+import { VectorIndex, VectorRegistry } from "./vector-store.js";
 import { JevError, type JevClient, type JevRankInput } from "./jev.js";
-import { INDEX_MIN_PROBABILITY, JEV_INDEX_BONUS, JEV_MIN_RELEVANCE, SEARCH_RESULT_MAX_CHARS } from "./search-tool.js";
+import { INDEX_MIN_PROBABILITY, JEV_INDEX_BONUS, JEV_MIN_RELEVANCE, SEARCH_RESULT_MAX_CHARS, searchRecords } from "./search-tool.js";
 
 const CONN = "01911111-1111-7111-8111-111111111111";
 const COLLECTION = "col-1";
 
-interface Row { path: string; title?: string; description?: string; body?: string }
+interface Row { path: string; title?: string; description?: string; body?: string; frontmatter?: Record<string, unknown>; unreadable?: boolean }
 
-function fakeGateway(rows: Row[], operations: string[] = ["query", "read"], onOp?: (op: string, input: Record<string, unknown>) => void) {
+function fakeGateway(rows: Row[], operations: string[] = ["query", "read"], onOp?: (op: string, input: Record<string, unknown>) => void, exact?: string[]) {
   const operation = vi.fn(async (_s: string, _c: string, op: string, input: Record<string, unknown>) => {
     onOp?.(op, input);
     if (op !== "query") throw new Error(`unexpected ${op}`);
     const where = String(input.where);
     if (where.startsWith("file.path in [")) {
-      return { results: rows.filter((r) => where.includes(JSON.stringify(r.path))).map((r) => ({ path: r.path, body: r.body ?? "" })) };
+      return {
+        results: rows.filter((r) => !r.unreadable && where.includes(JSON.stringify(r.path))).map((r) => ({
+          path: r.path, body: r.body ?? "",
+          frontmatter: { ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}), ...r.frontmatter }
+        }))
+      };
     }
     return {
-      results: rows.map((r) => ({
+      results: rows.filter((r) => !exact || exact.includes(r.path)).map((r) => ({
         path: r.path, types: ["note"], revision: "r1",
         frontmatter: { ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}) }
       }))
@@ -42,7 +49,7 @@ function fakeLog() {
   return { entries, log };
 }
 
-async function connect(gateway: ConnectGateway, options: { jev?: JevClient | null; indexes?: IndexOption[] | null; rules?: string[] | null; log?: CallLog; queryText?: boolean } = {}) {
+async function connect(gateway: ConnectGateway, options: { vectors?: VectorRegistry; embedding?: EmbeddingClient | null; jev?: JevClient | null; indexes?: IndexOption[] | null; rules?: string[] | null; log?: CallLog; queryText?: boolean } = {}) {
   const server = createMcpServer(
     { clientId: "c", connectionSetId: "set-1", scopes: ["mdbase:read"] },
     gateway,
@@ -52,6 +59,8 @@ async function connect(gateway: ConnectGateway, options: { jev?: JevClient | nul
       callLog: options.log,
       queryTextCollections: options.queryText ? new Set([COLLECTION]) : new Set(),
       jev: options.jev,
+      vectors: options.vectors,
+      embedding: options.embedding,
       indexList: options.indexes === undefined ? undefined : ({ peek: () => options.indexes } as unknown as IndexListCache),
       folderRules: options.rules === undefined ? undefined : ({ peek: () => options.rules } as unknown as FolderRulesCache)
     }
@@ -155,7 +164,7 @@ describe("search_records", () => {
     const { search } = await connect(fakeGateway(rows), { jev: null });
     const { json } = await search({ query: "reuniao" });
     expect(json.ranking).toBe("pre_order");
-    expect(json.ranking_warning).toBeUndefined();
+    expect(json.ranking_warning).toBe("semantic_unavailable");
     expect(json.results).toHaveLength(3);
     expect(json.results[0].score).toBeGreaterThan(0);
   });
@@ -275,6 +284,272 @@ describe("search_records", () => {
       expect(entries[0].queryText).toBe(allowed ? "reuniao" : null);
       expect(entries[0].paths).toEqual(["notas/n00.md", "notas/n01.md"].sort());
       expect(JSON.stringify(entries[0])).not.toContain("Texto da reuniao");
+    }
+  });
+});
+
+type Vec = { path: string; vec: [number, number]; kind?: "card" | "chunk"; lines?: [number, number]; types?: string[] };
+
+function registryOf(entries: Vec[], ready = true): VectorRegistry {
+  const index = new VectorIndex();
+  index.ready = ready;
+  for (const e of entries) {
+    const slash = e.path.lastIndexOf("/");
+    index.replaceNote(e.path, [{
+      path: e.path, kind: e.kind ?? "chunk", seq: e.kind === "card" ? 0 : 1, lineStart: e.lines?.[0] ?? 1, lineEnd: e.lines?.[1] ?? 1, textHash: "h", revision: "r1",
+      types: e.types ?? ["note"], folder: slash < 0 ? "" : e.path.slice(0, slash), vector: Float32Array.from(e.vec)
+    }]);
+  }
+  const registry = new VectorRegistry();
+  registry.set(COLLECTION, index);
+  return registry;
+}
+
+const embedder = (vec: number[] = [1, 0]): EmbeddingClient & { embed: ReturnType<typeof vi.fn> } => ({
+  model: "m", embed: vi.fn(async () => [Float32Array.from(vec)])
+});
+
+const paths = (json: { results: Array<{ path: string }> }) => json.results.map((r) => r.path);
+
+describe("search_records por sentido", () => {
+  it("com índice, as candidatas vêm do embedding", async () => {
+    const rows: Row[] = [
+      { path: "n/a.md", title: "A", body: "l1\nl2\nl3\nl4" },
+      { path: "n/b.md", title: "B", body: "x" },
+      { path: "n/c.md", title: "C", body: "y" }
+    ];
+    const vectors = registryOf([
+      { path: "n/c.md", vec: [0, 1] }, { path: "n/a.md", vec: [1, 0], lines: [2, 3] }, { path: "n/b.md", vec: [0.8, 0.6] }
+    ]);
+    const embedding = embedder();
+    const gateway = fakeGateway(rows);
+    const { search } = await connect(gateway, { jev: null, vectors, embedding });
+    const { json } = await search({ query: "o assunto" });
+    expect(paths(json)).toEqual(["n/a.md", "n/b.md", "n/c.md"]);
+    expect(json.ranking_warning).toBeUndefined();
+    expect(json.results[0]).toMatchObject({ excerpt: "l2\nl3", line_start: 2, line_end: 3, title: "A" });
+    expect(json.results[0].score).toBeCloseTo(1);
+    expect(embedding.embed.mock.calls[0][0]).toEqual(["o assunto"]);
+    // no terms: the only query is the one reading the candidates
+    expect(gateway.operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("termos exatos completam e reforçam", async () => {
+    const rows: Row[] = [
+      { path: "n/a.md", title: "A", body: "a" }, { path: "n/b.md", title: "B", body: "b" },
+      { path: "n/c.md", title: "C", body: "c" }, { path: "n/d.md", title: "D", body: "o sudo fica aqui" }
+    ];
+    const vectors = registryOf([{ path: "n/a.md", vec: [1, 0] }, { path: "n/b.md", vec: [0.9, 0.43] }, { path: "n/c.md", vec: [0.5, 0.86] }]);
+    const gateway = fakeGateway(rows, ["query"], undefined, ["n/c.md", "n/d.md"]);
+    const { search } = await connect(gateway, { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "conta de serviço", terms: ["sudo"], limit: 10 });
+    // c is in both lists and moves to the front; d only came from the term
+    expect(paths(json)).toEqual(["n/c.md", "n/a.md", "n/b.md", "n/d.md"]);
+    expect(json.results[3].excerpt).toContain("sudo");
+    expect(json.ranking_warning).toBeUndefined();
+  });
+
+  it("sem índice cai na reserva com semantic_unavailable", async () => {
+    const { search } = await connect(fakeGateway(manyRows(3)), { jev: null, vectors: new VectorRegistry(), embedding: embedder() });
+    const { json } = await search({ query: "reuniao" });
+    expect(json.ranking_warning).toBe("semantic_unavailable");
+    expect(json.results).toHaveLength(3);
+    expect(json.results[0].related).toEqual([]);
+  });
+
+  it("embedding fora cai na reserva", async () => {
+    const embedding: EmbeddingClient = { model: "m", embed: vi.fn(async () => { throw new EmbeddingError("embedding_unavailable", "down"); }) };
+    const vectors = registryOf([{ path: "notas/n00.md", vec: [1, 0] }]);
+    const { search } = await connect(fakeGateway(manyRows(3)), { jev: null, vectors, embedding });
+    const { json } = await search({ query: "reuniao" });
+    expect(json.ranking_warning).toBe("semantic_unavailable");
+    expect(json.results).toHaveLength(3);
+  });
+
+  it("nota que a conexão não lê sai das candidatas", async () => {
+    const rows: Row[] = [{ path: "n/a.md", body: "a" }, { path: "n/b.md", body: "b", unreadable: true }];
+    const vectors = registryOf([{ path: "n/b.md", vec: [1, 0] }, { path: "n/a.md", vec: [0.5, 0.86] }]);
+    const { search } = await connect(fakeGateway(rows), { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "x" });
+    expect(paths(json)).toEqual(["n/a.md"]);
+  });
+
+  it("related resolve até 5 ligações com título", async () => {
+    const stems = ["a", "b", "c", "d", "e", "f"];
+    const rows: Row[] = [
+      {
+        path: "n/main.md", body: "texto",
+        frontmatter: { related: ["[[a]]", "[[b|apelido]]", "[[c#parte]]", "[[main]]", "[[a]]", "[[zzz]]"], origem: "veja [[d]] e [[e]] e [[f]]" }
+      },
+      ...stems.map((s) => ({ path: `ref/${s}.md`, title: `Titulo ${s}`, description: `Desc ${s}`, body: "" }))
+    ];
+    const vectors = registryOf([{ path: "n/main.md", vec: [1, 0] }, ...stems.map((s) => ({ path: `ref/${s}.md`, vec: [0, 1] as [number, number] }))]);
+    const { search } = await connect(fakeGateway(rows), { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "x", limit: 1 });
+    expect(json.results[0].path).toBe("n/main.md");
+    expect(json.results[0].related).toEqual(
+      ["a", "b", "c", "d", "e"].map((s) => ({ path: `ref/${s}.md`, title: `Titulo ${s}`, description: `Desc ${s}` }))
+    );
+  });
+
+  it("validity marca arquivada por tipo e por pasta", async () => {
+    const rows: Row[] = [
+      { path: "n/vivo.md", body: "a", frontmatter: { types: ["nota", "plano"], status: "ativo", created: "2026-01-02", modified: "2026-03-04", updated: "2026-02-01" } },
+      { path: "n/velho.md", body: "b", frontmatter: { types: ["arquivo"] } },
+      { path: "99-arquivo/x.md", body: "c", frontmatter: {} },
+      { path: "13-engenharia/99-arquivo/y.md", body: "d", frontmatter: {} },
+      { path: "n/nao-99-arquivo/z.md", body: "e", frontmatter: {} }
+    ];
+    const vectors = registryOf([
+      { path: "n/vivo.md", vec: [1, 0] }, { path: "n/velho.md", vec: [0.9, 0.43] }, { path: "99-arquivo/x.md", vec: [0.8, 0.6] },
+      { path: "13-engenharia/99-arquivo/y.md", vec: [0.7, 0.7] }, { path: "n/nao-99-arquivo/z.md", vec: [0.6, 0.8] }
+    ]);
+    const { search } = await connect(fakeGateway(rows), { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "x" });
+    expect(json.results[0].validity).toEqual({ type: "nota", status: "ativo", date: "2026-03-04", archived: false });
+    expect(json.results[1].validity).toEqual({ type: "arquivo", status: null, date: null, archived: true });
+    expect(json.results[2].validity).toEqual({ type: null, status: null, date: null, archived: true });
+    expect(json.results[3].validity.archived).toBe(true);
+    // a folder that only ends in "99-arquivo" is not the archive folder
+    expect(json.results[4].validity.archived).toBe(false);
+  });
+
+  it("teto corta related antes de resultados", async () => {
+    const stems = ["r0", "r1", "r2", "r3", "r4"];
+    const mains = Array.from({ length: 8 }, (_, i) => `n/m${i}.md`);
+    const rows: Row[] = [
+      ...mains.map((path) => ({ path, body: "palavra ".repeat(125), frontmatter: { related: stems.map((s) => `[[${s}]]`) } })),
+      ...stems.map((s) => ({ path: `ref/${s}.md`, title: `Titulo ${s}`, description: "d".repeat(300), body: "" }))
+    ];
+    const vectors = registryOf([...mains.map((path) => ({ path, vec: [1, 0] as [number, number] })), ...stems.map((s) => ({ path: `ref/${s}.md`, vec: [0, 1] as [number, number] }))]);
+    const { search } = await connect(fakeGateway(rows), { jev: null, vectors, embedding: embedder() });
+    const { json, text } = await search({ query: "x" });
+    expect(json.results).toHaveLength(8);
+    expect(json.truncated).toBe(true);
+    expect(json.results.every((r: { related: unknown[] }) => r.related.length === 0)).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(SEARCH_RESULT_MAX_CHARS);
+  });
+
+  it("terms_timeout quando um termo estoura", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const gateway = {
+        listConnections: vi.fn(async () => [{ id: CONN, collection_id: COLLECTION, display_name: "x", operations: ["query"], scope: {}, authority: "local" }]),
+        operation: vi.fn(async (_s: string, _c: string, _op: string, input: Record<string, unknown>) => {
+          if (String(input.where).startsWith("file.path in [")) return { results: [{ path: "n/a.md", body: "a", frontmatter: {} }] };
+          return new Promise(() => {});
+        })
+      } as unknown as ConnectGateway;
+      const vectors = registryOf([{ path: "n/a.md", vec: [1, 0] }]);
+      const pending = searchRecords({ gateway, connectionSetId: "set-1", vectors, embedding: embedder() }, CONN, { query: "x", terms: ["sudo"] });
+      await vi.advanceTimersByTimeAsync(1_500);
+      const output = await pending;
+      expect(output.ranking_warning).toBe("terms_timeout");
+      expect(output.results.map((r) => r.path)).toEqual(["n/a.md"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("as instruções do servidor ensinam query, terms e a preferência por notas vigentes", () => {
+    expect(SERVER_INSTRUCTIONS).toContain(
+      "When using search_records, put the subject in query in your own words (not the user's message pasted), exact names in terms, and prefer records that are not archived and more recent when two contradict each other."
+    );
+  });
+
+  it("leitura dos corpos falha no caminho semântico: cai na reserva sem vazar notas do índice", async () => {
+    const rows: Row[] = [{ path: "n/a.md", title: "A", body: "reuniao" }, { path: "n/b.md", title: "B", body: "reuniao", unreadable: true }];
+    const vectors = registryOf([{ path: "n/b.md", vec: [1, 0] }, { path: "n/a.md", vec: [0.5, 0.86] }]);
+    let reads = 0;
+    const gateway = fakeGateway(rows, ["query"], (_op, input) => {
+      if (String(input.where).startsWith("file.path in") && reads++ === 0) throw new Error("down");
+    }, ["n/a.md"]);
+    const { search } = await connect(gateway, { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "reuniao" });
+    expect(json.ranking_warning).toBe("semantic_unavailable");
+    // the reserve only knows what the caller's own queries return
+    expect(paths(json)).toEqual(["n/a.md"]);
+  });
+
+  it("consulta dos termos exatos rejeitada não derruba a busca: terms_timeout", async () => {
+    const rows: Row[] = [{ path: "n/a.md", title: "A", body: "a" }];
+    const vectors = registryOf([{ path: "n/a.md", vec: [1, 0] }]);
+    const gateway = fakeGateway(rows, ["query"], (_op, input) => {
+      if (!String(input.where).startsWith("file.path in")) throw new Error("boom");
+    });
+    const { search } = await connect(gateway, { jev: null, vectors, embedding: embedder() });
+    const { json, isError } = await search({ query: "x", terms: ["sudo"] });
+    expect(isError).toBe(false);
+    expect(paths(json)).toEqual(["n/a.md"]);
+    expect(json.ranking_warning).toBe("terms_timeout");
+  });
+});
+
+describe("search_records: correções da revisão final", () => {
+  it("índice ainda não pronto cai na reserva, sem chamar o embedding", async () => {
+    const vectors = registryOf([{ path: "notas/n00.md", vec: [1, 0] }], false);
+    const embedding = embedder();
+    const { search } = await connect(fakeGateway(manyRows(3)), { jev: null, vectors, embedding });
+    const { json } = await search({ query: "reuniao" });
+    expect(json.ranking_warning).toBe("semantic_unavailable");
+    expect(json.results).toHaveLength(3);
+    expect(embedding.embed).not.toHaveBeenCalled();
+  });
+
+  it("índice pronto responde por sentido", async () => {
+    const vectors = registryOf([{ path: "notas/n00.md", vec: [1, 0] }], true);
+    const { search } = await connect(fakeGateway(manyRows(3)), { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "reuniao" });
+    expect(json.ranking_warning).toBeUndefined();
+    expect(paths(json)).toEqual(["notas/n00.md"]);
+  });
+
+  it("a reserva também procura os terms", async () => {
+    const wheres: string[] = [];
+    const gateway = fakeGateway(manyRows(2), ["query"], (_op, input) => void wheres.push(String(input.where)));
+    const { search } = await connect(gateway, { jev: null, vectors: new VectorRegistry(), embedding: embedder() });
+    await search({ query: "reuniao", terms: ["kubernetes"] });
+    expect(wheres.some((w) => w.includes("kubernetes"))).toBe(true);
+  });
+
+  it("trecho do embedding vai até 1.200 caracteres, centrado no termo", async () => {
+    const lines = Array.from({ length: 12 }, (_, i) => `linha ${i} ${"x".repeat(300)}`);
+    lines[9] = `linha 9 AGULHA ${"y".repeat(300)}`;
+    const rows: Row[] = [{ path: "n/a.md", title: "A", body: lines.join("\n") }];
+    const vectors = registryOf([{ path: "n/a.md", vec: [1, 0], lines: [1, 12] }]);
+    const { search } = await connect(fakeGateway(rows), { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "x", terms: ["agulha"] });
+    expect(json.results[0].excerpt.length).toBeLessThanOrEqual(1_200);
+    expect(json.results[0].excerpt).toContain("AGULHA");
+    expect(json.results[0].line_start).toBeGreaterThan(1);
+    expect(json.results[0].line_end).toBeLessThan(12);
+    expect(json.truncated).toBe(false);
+  });
+
+  it("folder com barra final acha as notas da pasta", async () => {
+    const rows: Row[] = [{ path: "13-engenharia/a.md", title: "A", body: "a" }, { path: "outra/b.md", title: "B", body: "b" }];
+    const vectors = registryOf([{ path: "13-engenharia/a.md", vec: [1, 0] }, { path: "outra/b.md", vec: [1, 0] }]);
+    const { search } = await connect(fakeGateway(rows), { jev: null, vectors, embedding: embedder() });
+    const { json } = await search({ query: "x", folder: "13-engenharia/" });
+    expect(paths(json)).toEqual(["13-engenharia/a.md"]);
+    expect(json.ranking_warning).toBeUndefined();
+  });
+
+  it("a busca dá 3.000 ms ao embedding", async () => {
+    const embedding = embedder();
+    const vectors = registryOf([{ path: "notas/n00.md", vec: [1, 0] }]);
+    const { search } = await connect(fakeGateway(manyRows(1)), { jev: null, vectors, embedding });
+    await search({ query: "reuniao" });
+    expect(embedding.embed.mock.calls[0][2]).toEqual({ timeoutMs: 3_000 });
+  });
+
+  it("registra os terms junto com a consulta, só em coleção liberada", async () => {
+    for (const allowed of [true, false]) {
+      const { entries, log } = fakeLog();
+      const { search } = await connect(fakeGateway(manyRows(2)), { jev: null, log, queryText: allowed });
+      await search({ query: "reuniao", terms: ["sudo", "ssh"] });
+      await vi.waitFor(() => expect(entries).toHaveLength(1));
+      expect(entries[0].queryText).toBe(allowed ? "reuniao | terms: sudo, ssh" : null);
     }
   });
 });

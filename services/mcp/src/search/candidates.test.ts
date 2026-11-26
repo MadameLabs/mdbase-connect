@@ -1,21 +1,36 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectGateway } from "../connect.js";
-import { MAX_CANDIDATES, gatherCandidates, searchTerms } from "./candidates.js";
+import { GatewayOperationError } from "../errors.js";
+import { BODY_TERMS, MAX_CANDIDATES, bodyExpression, exactTermCandidates, folderRange, gatherCandidates, metaExpression, searchTerms } from "./candidates.js";
 
 type Row = { path: string; types?: string[]; revision?: string; frontmatter?: Record<string, unknown> };
-/** results by term: the term is found in the `where` literal. `more` lists terms whose
- * full (body) query reports has_more; their restricted re-query gets `restricted[term]`. */
-function fake(byTerm: Record<string, Row[]>, more: string[] = [], restricted: Record<string, Row[]> = {}) {
-  const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
-    const term = Object.keys(byTerm).find((t) => input.where.includes(`contains("${t}")`) || input.where.includes(`])${t}([`));
-    const isBody = input.where.includes("file.body");
-    const source = term && more.includes(term) && !isBody ? restricted[term] ?? [] : term ? byTerm[term] : [];
-    const results = source.map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", frontmatter: r.frontmatter ?? {} }));
-    return { results, meta: { has_more: term !== undefined && more.includes(term) && isBody } };
+const BODY_RE = /^\(?file\.body\.lower\(\)\.contains\("([^"]*)"\)/;
+const isBodyWhere = (where: string) => BODY_RE.test(where);
+/** One body query per long term (`body[term]`, served `pageSize` rows a page with a
+ * numeric cursor) and one title/description/path query (`meta`). */
+function fake(lists: { body?: Record<string, Row[]>; meta?: Row[]; pageSize?: number; staleFirst?: number }) {
+  let stale = lists.staleFirst ?? 0;
+  const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string; cursor?: string }) => {
+    // The authority refuses to resume a query by cursor: pages continue by `file.path >`.
+    if (input.cursor !== undefined) throw new GatewayOperationError("cursor_stale", "cursor expired");
+    const m = BODY_RE.exec(input.where);
+    if (m && stale > 0) {
+      stale -= 1;
+      throw new GatewayOperationError("cursor_stale", "cursor expired");
+    }
+    const sorted = [...((m ? lists.body?.[m[1]] : lists.meta) ?? [])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const after = /&& file\.path > "([^"]*)"$/.exec(input.where);
+    const all = after ? sorted.filter((r) => r.path > after[1]!) : sorted;
+    const size = m ? lists.pageSize ?? Infinity : Infinity;
+    const results = all.slice(0, size).map((r) => ({ path: r.path, types: r.types ?? [], revision: r.revision ?? "r", frontmatter: r.frontmatter ?? {} }));
+    const more = all.length > size;
+    return { results, meta: more ? { has_more: true, cursor: "opaque" } : { has_more: false } };
   });
   return { gateway: { operation } as unknown as ConnectGateway, operation };
 }
 const wheres = (op: ReturnType<typeof fake>["operation"]) => op.mock.calls.map((c) => (c[3] as { where: string }).where);
+const bodyWheres = (op: ReturnType<typeof fake>["operation"]) => wheres(op).filter(isBodyWhere);
+const metaWhere = (op: ReturnType<typeof fake>["operation"]) => wheres(op).find((w) => !isBodyWhere(w));
 
 describe("searchTerms", () => {
   it("separa termos longos e curtos, minúsculas, sem pontuação nem repetição", () => {
@@ -50,82 +65,162 @@ describe("searchTerms: teto", () => {
   });
 });
 
+describe("expressões", () => {
+  it("bodyExpression é só o contains do corpo, para o índice", () => {
+    expect(bodyExpression("cartão")).toBe('file.body.lower().contains("cartão")');
+  });
+  it("metaExpression testa título, descrição e caminho; sigla por fronteira de palavra", () => {
+    const w = metaExpression(["fatura"], ["pf"]);
+    expect(w).toContain('(has(raw.title) && raw.title.lower().contains("fatura"))');
+    expect(w).toContain('(has(raw.description) && raw.description.lower().contains("fatura"))');
+    expect(w).toContain('file.path.lower().contains("fatura")');
+    expect(w).toContain('file.path.lower().matches("(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)")');
+    expect(w).not.toContain("file.body");
+  });
+  it("folderRange é uma faixa de caminho, sem barra dupla e com escape", () => {
+    expect(folderRange("13-engenharia")).toBe('(file.path >= "13-engenharia/" && file.path < "13-engenharia0")');
+    expect(folderRange("a/b/")).toBe('(file.path >= "a/b/" && file.path < "a/b0")');
+    expect(folderRange('a"b')).toBe('(file.path >= "a\\"b/" && file.path < "a\\"b0")');
+  });
+});
+
 describe("gatherCandidates", () => {
+  it("uma consulta de corpo por termo longo e uma de título, descrição e caminho", async () => {
+    const { gateway, operation } = fake({});
+    await gatherCandidates(gateway, "s", "c", "fatura cartão PF", {});
+    expect(operation).toHaveBeenCalledTimes(3);
+    expect(bodyWheres(operation).sort()).toEqual(['file.body.lower().contains("cartão")', 'file.body.lower().contains("fatura")']);
+    const meta = metaWhere(operation) as string;
+    expect(meta).toContain('raw.title.lower().contains("fatura")');
+    expect(meta).toContain('raw.title.lower().contains("cartão")');
+    expect(meta).toContain('file.path.lower().matches("(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)")');
+    expect(meta).not.toContain("file.body");
+    for (const c of operation.mock.calls) {
+      const input = c[3] as Record<string, unknown>;
+      expect(input.limit).toBe(300);
+      // A consulta comum: a autoridade hospedada recusa `output: "metadata"` com condição no corpo.
+      expect(input).not.toHaveProperty("output");
+      expect(input).not.toHaveProperty("select");
+      expect(input).not.toHaveProperty("types");
+    }
+  });
+
+  it(`corpo só para os ${BODY_TERMS} termos longos mais longos`, async () => {
+    // searchTerms keeps MAX_TERMS (8) terms, so "abc" (the shortest) is cut before BODY_TERMS applies.
+    const { gateway, operation } = fake({});
+    await gatherCandidates(gateway, "s", "c", "abc abcd abcde abcdef abcdefg abcdefgh abcdefghi abcdefghij abcdefghijk", {});
+    expect(bodyWheres(operation).map((w) => BODY_RE.exec(w)?.[1]).sort()).toEqual([
+      "abcd", "abcde", "abcdef", "abcdefg", "abcdefgh", "abcdefghi", "abcdefghij", "abcdefghijk"
+    ]);
+    expect(metaWhere(operation)).toContain('raw.title.lower().contains("abcd")');
+  });
+
+  it("só siglas: uma consulta, sem corpo", async () => {
+    const { gateway, operation } = fake({ meta: [{ path: "x-pf.md", frontmatter: { title: "Regras PF" } }, { path: "y.md", frontmatter: { description: "sobre PJ" } }] });
+    const r = await gatherCandidates(gateway, "s", "c", "PF PJ", {});
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(wheres(operation)[0]).not.toContain("file.body");
+    expect(wheres(operation)[0]).not.toContain(".contains(");
+    expect(r.candidates.map((c) => c.path).sort()).toEqual(["x-pf.md", "y.md"]);
+  });
+
+  it("pasta vira faixa de caminho em cada consulta do corpo", async () => {
+    const { gateway, operation } = fake({});
+    await gatherCandidates(gateway, "s", "c", "fatura cartão", { types: ["task"], folder: "13-engenharia" });
+    expect(bodyWheres(operation).sort()).toEqual([
+      '(file.body.lower().contains("cartão")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")',
+      '(file.body.lower().contains("fatura")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")'
+    ]);
+    expect(metaWhere(operation)).toContain('file.path.startsWith("13-engenharia/")');
+    for (const c of operation.mock.calls) expect((c[3] as unknown as { types: string[] }).types).toEqual(["task"]);
+  });
+
+  it("escapa aspas e barras do literal da pasta", async () => {
+    const { gateway, operation } = fake({});
+    await gatherCandidates(gateway, "s", "c", "xx", { folder: 'a"b\\c' });
+    expect(metaWhere(operation)).toContain('startsWith("a\\"b\\\\c/")');
+  });
+
+  it("termo médio: o corpo segue por caminho até o fim", async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ path: `s${i}.md` }));
+    const { gateway, operation } = fake({ body: { sudo: rows }, pageSize: 2 });
+    const r = await gatherCandidates(gateway, "s", "c", "sudo", {});
+    const sudoCalls = operation.mock.calls.filter((c) => isBodyWhere((c[3] as { where: string }).where));
+    expect(sudoCalls.map((c) => (c[3] as { where: string }).where)).toEqual([
+      'file.body.lower().contains("sudo")',
+      '(file.body.lower().contains("sudo")) && file.path > "s1.md"',
+      '(file.body.lower().contains("sudo")) && file.path > "s3.md"'
+    ]);
+    for (const c of sudoCalls) expect(c[3]).not.toHaveProperty("cursor");
+    expect(r.total).toBe(5);
+    expect(r.candidates.every((c) => c.hits.body === 1)).toBe(true);
+  });
+
+  it("cursor_stale na primeira página do corpo: tenta de novo e segue", async () => {
+    const { gateway } = fake({ body: { sudo: [{ path: "a.md" }, { path: "b.md" }] }, staleFirst: 1 });
+    const r = await gatherCandidates(gateway, "s", "c", "sudo", {});
+    expect(r.total).toBe(2);
+  });
+
+  it("cursor_stale duas vezes na mesma página: o erro sobe", async () => {
+    const { gateway } = fake({ body: { sudo: [{ path: "a.md" }] }, staleFirst: 2 });
+    await expect(gatherCandidates(gateway, "s", "c", "sudo", {})).rejects.toMatchObject({ code: "cursor_stale" });
+  });
+
+  it("termo comum (mais de 300 notas no corpo): descartado, sem passar de 300", async () => {
+    const rows = Array.from({ length: 301 }, (_, i) => ({ path: `r${i}.md` }));
+    const { gateway, operation } = fake({ body: { reuniao: rows, fatura: [{ path: "a.md" }] }, pageSize: 100 });
+    const r = await gatherCandidates(gateway, "s", "c", "reuniao fatura", {});
+    const reuniao = operation.mock.calls.filter((c) => (c[3] as { where: string }).where.includes('"reuniao")') && isBodyWhere((c[3] as { where: string }).where));
+    expect(reuniao).toHaveLength(3);
+    expect(r.candidates.map((c) => c.path)).toEqual(["a.md"]);
+  });
+
+  it("corpo conta por termo, só onde o termo não bateu fora dele", async () => {
+    const a = { path: "a.md", frontmatter: { title: "Fatura" } };
+    const { gateway } = fake({ body: { fatura: [a], cartão: [a] }, meta: [a] });
+    const r = await gatherCandidates(gateway, "s", "c", "fatura cartão", {});
+    expect(r.total).toBe(1);
+    expect(r.candidates[0]).toMatchObject({ preScore: 4, hits: { title: 1, description: 0, path: 0, body: 1 } });
+  });
+
+  it("termo no título e no corpo conta só o peso do título", async () => {
+    const a = { path: "a.md", frontmatter: { title: "Fatura" } };
+    const { gateway } = fake({ body: { fatura: [a] }, meta: [a] });
+    const r = await gatherCandidates(gateway, "s", "c", "fatura", {});
+    expect(r.candidates[0].preScore).toBe(3);
+    expect(r.candidates[0].hits).toEqual({ title: 1, description: 0, path: 0, body: 0 });
+  });
+
+  it("nota só do corpo vale 1 por termo e total conta notas distintas", async () => {
+    const b = { path: "b.md", frontmatter: { title: "Fatura" } };
+    const { gateway } = fake({ body: { fatura: [{ path: "a.md" }, b] }, meta: [b] });
+    const r = await gatherCandidates(gateway, "s", "c", "fatura", {});
+    expect(r.total).toBe(2);
+    expect(r.candidates.map((c) => [c.path, c.preScore])).toEqual([["b.md", 3], ["a.md", 1]]);
+    expect(r.candidates[1].hits).toEqual({ title: 0, description: 0, path: 0, body: 1 });
+  });
+
   it("nota sem title nem description que bate no corpo continua candidata", async () => {
-    const { gateway } = fake({ cartão: [{ path: "a.md", frontmatter: {} }] });
+    const { gateway } = fake({ body: { cartão: [{ path: "a.md", frontmatter: {} }] } });
     const r = await gatherCandidates(gateway, "s", "c", "cartão", {});
     expect(r.candidates).toHaveLength(1);
     expect(r.candidates[0]).toMatchObject({ path: "a.md", title: null, description: null, hits: { body: 1, title: 0 }, preScore: 1 });
   });
 
-  it("termos curtos geram consultas sem corpo e devolvem candidatas", async () => {
-    const { gateway, operation } = fake({ pf: [{ path: "x-pf.md", frontmatter: { title: "Regras PF" } }], pj: [{ path: "y.md", frontmatter: { description: "sobre PJ" } }] });
-    const r = await gatherCandidates(gateway, "s", "c", "PF PJ", {});
-    expect(operation).toHaveBeenCalledTimes(2);
-    for (const w of wheres(operation)) {
-      expect(w).not.toContain("file.body");
-      expect(w).toContain("has(raw.title)");
-      expect(w).toContain("has(raw.description)");
-      expect(w).toContain("file.path.lower().matches(");
-      expect(w).not.toContain(".contains(");
-    }
-    expect(wheres(operation)[0]).toContain('"(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)"');
-    expect(r.candidates.map((c) => c.path).sort()).toEqual(["x-pf.md", "y.md"]);
-    const input = operation.mock.calls[0][3] as Record<string, unknown>;
-    expect(input.limit).toBe(300);
-    // A consulta comum: a autoridade hospedada recusa `output: "metadata"` com condição
-    // no corpo (query_budget_exceeded), mesmo com poucos resultados.
-    expect(input).not.toHaveProperty("output");
-    expect(input).not.toHaveProperty("select");
-    expect(input).not.toHaveProperty("include_body");
-    expect(input).not.toHaveProperty("types");
-  });
-
-  it("termo longo testa caminho, title, description e corpo", async () => {
-    const { gateway, operation } = fake({});
-    await gatherCandidates(gateway, "s", "c", "fatura", {});
-    expect(wheres(operation)[0]).toContain('file.body.lower().contains("fatura")');
-  });
-
-  it("acerto no título pesa mais que no corpo", async () => {
-    const { gateway } = fake({ fatura: [{ path: "b.md", frontmatter: {} }, { path: "a.md", frontmatter: { title: "Fatura de maio" } }] });
-    const r = await gatherCandidates(gateway, "s", "c", "fatura", {});
-    expect(r.candidates.map((c) => c.path)).toEqual(["a.md", "b.md"]);
-    expect(r.candidates[0].preScore).toBe(3);
-    expect(r.candidates[1].preScore).toBe(1);
-  });
-
   it("soma o maior peso por termo distinto e desempata por número de termos", async () => {
-    const { gateway } = fake({
-      fatura: [{ path: "um.md", frontmatter: { title: "fatura" } }, { path: "dois.md", frontmatter: {} }],
-      cartão: [{ path: "dois.md", frontmatter: {} }]
-    });
+    const um = { path: "um.md", frontmatter: { title: "fatura" } };
+    const { gateway } = fake({ body: { fatura: [{ path: "dois.md" }], cartão: [{ path: "dois.md" }, { path: "tres.md" }] }, meta: [um] });
     const r = await gatherCandidates(gateway, "s", "c", "fatura cartão", {});
-    expect(r.candidates.map((c) => [c.path, c.preScore])).toEqual([["um.md", 3], ["dois.md", 2]]);
+    expect(r.candidates.map((c) => [c.path, c.preScore])).toEqual([["um.md", 3], ["dois.md", 2], ["tres.md", 1]]);
   });
 
   it("mais de 30 candidatas: devolve 30 e total real", async () => {
     const rows = Array.from({ length: 45 }, (_, i) => ({ path: `n${i}.md` }));
-    const { gateway } = fake({ nota: rows });
+    const { gateway } = fake({ body: { nota: rows } });
     const r = await gatherCandidates(gateway, "s", "c", "nota", {});
     expect(r.candidates).toHaveLength(MAX_CANDIDATES);
     expect(r.total).toBe(45);
-  });
-
-  it("filtros types e folder chegam à query", async () => {
-    const { gateway, operation } = fake({});
-    await gatherCandidates(gateway, "s", "c", "nota", { types: ["task"], folder: "13-engenharia" });
-    const input = operation.mock.calls[0][3] as { where: string; types: string[] };
-    expect(input.types).toEqual(["task"]);
-    expect(input.where).toContain('file.path.startsWith("13-engenharia/")');
-    await gatherCandidates(gateway, "s", "c", "nota", { folder: "a/b/" });
-    expect(wheres(operation)[1]).toContain('startsWith("a/b/")');
-  });
-
-  it("escapa aspas e barras do literal", async () => {
-    const { gateway, operation } = fake({});
-    await gatherCandidates(gateway, "s", "c", "xx", { folder: 'a"b\\c' });
-    expect(wheres(operation)[0]).toContain('startsWith("a\\"b\\\\c/")');
   });
 
   it("só palavras vazias: nenhuma consulta e resultado vazio", async () => {
@@ -135,15 +230,8 @@ describe("gatherCandidates", () => {
     expect(operation).not.toHaveBeenCalled();
   });
 
-  it("termo no título e no corpo conta só o peso do título", async () => {
-    const { gateway } = fake({ fatura: [{ path: "a.md", frontmatter: { title: "Fatura" } }] });
-    const r = await gatherCandidates(gateway, "s", "c", "fatura", {});
-    expect(r.candidates[0].preScore).toBe(3);
-    expect(r.candidates[0].hits).toEqual({ title: 1, description: 0, path: 0, body: 0 });
-  });
-
   it("sigla casa por palavra: ia não acerta em 'media'", async () => {
-    const { gateway } = fake({ ia: [
+    const { gateway } = fake({ meta: [
       { path: "midia.md", frontmatter: { title: "Mídia social" } },
       { path: "x/ia-geral.md", frontmatter: {} },
       { path: "y.md", frontmatter: { title: "Uso de IA no dia a dia" } }
@@ -155,43 +243,8 @@ describe("gatherCandidates", () => {
     expect(by["y.md"].title).toBe(1);
   });
 
-  it("termo comum (has_more): refaz sem corpo, usa esse resultado e não dá crédito de corpo", async () => {
-    const { gateway, operation } = fake(
-      { reuniao: [{ path: "corpo.md" }, { path: "t.md", frontmatter: { title: "Reunião" } }] },
-      ["reuniao"],
-      { reuniao: [{ path: "t.md", frontmatter: { title: "reuniao semanal" } }] }
-    );
-    const r = await gatherCandidates(gateway, "s", "c", "reuniao", {});
-    expect(operation).toHaveBeenCalledTimes(2);
-    const [first, second] = wheres(operation);
-    expect(first).toContain("file.body");
-    expect(second).not.toContain("file.body");
-    expect((operation.mock.calls[1][3] as unknown as { limit: number }).limit).toBe(300);
-    expect(r.candidates.map((c) => c.path)).toEqual(["t.md"]);
-    expect(r.candidates[0].hits).toEqual({ title: 1, description: 0, path: 0, body: 0 });
-  });
-
-  it("cursor também marca termo comum", async () => {
-    const operation = vi.fn(async (_s: string, _c: string, _o: string, input: { where: string }) =>
-      ({ results: [], meta: input.where.includes("file.body") ? { has_more: false, cursor: "abc" } : {} }));
-    await gatherCandidates({ operation } as unknown as ConnectGateway, "s", "c", "reuniao", {});
-    expect(operation).toHaveBeenCalledTimes(2);
-  });
-
-  it("termo curto com has_more não é refeito", async () => {
-    const operation = vi.fn(async () => ({ results: [], meta: { has_more: true } }));
-    await gatherCandidates({ operation } as unknown as ConnectGateway, "s", "c", "ia", {});
-    expect(operation).toHaveBeenCalledTimes(1);
-  });
-
-  it("termo curto sem acerto em título, descrição ou caminho não conta como corpo", async () => {
-    const { gateway } = fake({ pf: [{ path: "a.md", frontmatter: {} }] });
-    const r = await gatherCandidates(gateway, "s", "c", "pf", {});
-    expect(r.candidates[0].hits).toEqual({ title: 0, description: 0, path: 0, body: 0 });
-  });
-
   it("types vêm do resultado, ou vazio", async () => {
-    const { gateway } = fake({ nota: [{ path: "a.md", types: ["task"] }, { path: "b.md" }] });
+    const { gateway } = fake({ body: { nota: [{ path: "a.md", types: ["task"] }, { path: "b.md" }] } });
     const r = await gatherCandidates(gateway, "s", "c", "nota", {});
     expect(r.candidates.map((c) => c.types).sort()).toEqual([[], ["task"]]);
   });
@@ -199,5 +252,109 @@ describe("gatherCandidates", () => {
   it("erro do gateway se propaga", async () => {
     const gateway = { operation: vi.fn(async () => { throw new Error("insufficient_collection_access"); }) } as unknown as ConnectGateway;
     await expect(gatherCandidates(gateway, "s", "c", "nota", {})).rejects.toThrow("insufficient_collection_access");
+  });
+});
+
+describe("exactTermCandidates", () => {
+  it("termos exatos: corpo por termo e meta com todos", async () => {
+    const { gateway, operation } = fake({
+      body: { fatura: [{ path: "a.md", types: ["task"], revision: "r1" }], cartão: [{ path: "b.md" }] },
+      meta: [{ path: "m.md", frontmatter: { title: "Fatura do cartão" } }]
+    });
+    const r = await exactTermCandidates(gateway, "s", "c", ["fatura", "cartão"], {}, { deadlineMs: 1500 });
+    expect(bodyWheres(operation).sort()).toEqual(['file.body.lower().contains("cartão")', 'file.body.lower().contains("fatura")']);
+    const meta = metaWhere(operation) as string;
+    expect(meta).toContain('raw.title.lower().contains("fatura")');
+    expect(meta).toContain('raw.title.lower().contains("cartão")');
+    expect(meta).not.toContain("file.body");
+    expect([...r.paths.keys()].sort()).toEqual(["a.md", "b.md", "m.md"]);
+    expect(r.paths.get("a.md")).toEqual({ title: null, description: null, types: ["task"], revision: "r1" });
+    expect(r.paths.get("m.md")).toEqual({ title: "Fatura do cartão", description: null, types: [], revision: "r" });
+    expect(r.dropped).toEqual([]);
+  });
+
+  it("sigla de 2 letras só na meta", async () => {
+    const { gateway, operation } = fake({ meta: [{ path: "x-pf.md", frontmatter: { title: "Regras PF" } }] });
+    const r = await exactTermCandidates(gateway, "s", "c", ["pf"], {}, { deadlineMs: 1500 });
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(wheres(operation)[0]).not.toContain("file.body");
+    expect(wheres(operation)[0]).toContain('file.path.lower().matches("(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)")');
+    expect([...r.paths.keys()]).toEqual(["x-pf.md"]);
+  });
+
+  it("termo comum acima de 300 descartado", async () => {
+    const rows = Array.from({ length: 301 }, (_, i) => ({ path: `r${i}.md` }));
+    const { gateway, operation } = fake({ body: { reuniao: rows, fatura: [{ path: "a.md" }] }, pageSize: 100 });
+    const r = await exactTermCandidates(gateway, "s", "c", ["reuniao", "fatura"], {}, { deadlineMs: 1500 });
+    const reuniao = bodyWheres(operation).filter((w) => w.includes('"reuniao"'));
+    expect(reuniao).toHaveLength(3);
+    expect([...r.paths.keys()]).toEqual(["a.md"]);
+    expect(r.dropped).toEqual([]);
+  });
+
+  it("termo que estoura o prazo vai para dropped e os outros voltam", async () => {
+    vi.useFakeTimers();
+    try {
+      const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
+        if (input.where === 'file.body.lower().contains("lento")') return new Promise<never>(() => {});
+        if (input.where === 'file.body.lower().contains("rapido")') {
+          return { results: [{ path: "r.md", types: [], revision: "r", frontmatter: {} }], meta: { has_more: false } };
+        }
+        return { results: [], meta: { has_more: false } };
+      });
+      const gateway = { operation } as unknown as ConnectGateway;
+      const pending = exactTermCandidates(gateway, "s", "c", ["lento", "rapido"], {}, { deadlineMs: 1500 });
+      await vi.advanceTimersByTimeAsync(1500);
+      const r = await pending;
+      expect(r.dropped).toEqual(["lento"]);
+      expect([...r.paths.keys()]).toEqual(["r.md"]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("consulta de título, descrição e caminho travada vai para dropped, com os termos curtos; o corpo dos longos volta", async () => {
+    vi.useFakeTimers();
+    try {
+      const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
+        if (input.where === 'file.body.lower().contains("sudo")') {
+          return { results: [{ path: "a.md", types: [], revision: "r", frontmatter: {} }], meta: { has_more: false } };
+        }
+        if (input.where.includes("raw.title")) return new Promise<never>(() => {});
+        return { results: [], meta: { has_more: false } };
+      });
+      const gateway = { operation } as unknown as ConnectGateway;
+      const pending = exactTermCandidates(gateway, "s", "c", ["sudo", "pf"], {}, { deadlineMs: 1500 });
+      await vi.advanceTimersByTimeAsync(1500);
+      const r = await pending;
+      expect(r.dropped).toEqual(["pf"]);
+      expect([...r.paths.keys()]).toEqual(["a.md"]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("normaliza termos: minúsculas, pontuação nas pontas fora", async () => {
+    const { gateway, operation } = fake({});
+    await exactTermCandidates(gateway, "s", "c", ["Sudo.", "PF"], {}, { deadlineMs: 1500 });
+    expect(bodyWheres(operation)).toEqual(['file.body.lower().contains("sudo")']);
+    const meta = metaWhere(operation) as string;
+    expect(meta).toContain('raw.title.lower().contains("sudo")');
+    expect(meta).toContain('file.path.lower().matches("(^|[^a-z0-9à-ÿ])pf([^a-z0-9à-ÿ]|$)")');
+  });
+
+  it("descarta vazios e repetidos antes do teto de 4 termos", async () => {
+    const { gateway, operation } = fake({});
+    await exactTermCandidates(gateway, "s", "c", ["-", "aaa", "", "bbb!", "bbb", "ccc", "ddd", "eee"], {}, { deadlineMs: 1500 });
+    expect(bodyWheres(operation).map((w) => BODY_RE.exec(w)?.[1]).sort()).toEqual(["aaa", "bbb", "ccc", "ddd"]);
+    expect(metaWhere(operation)).not.toContain('contains("")');
+  });
+});
+
+describe("reserva e prazo", () => {
+  it("BODY_TERMS é 8 na reserva", () => {
+    expect(BODY_TERMS).toBe(8);
   });
 });

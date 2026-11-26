@@ -927,7 +927,8 @@ function testConfig(): McpRuntimeConfig {
     trustProxy: false,
     callLogRetentionDays: 30,
     queryTextCollections: new Set(),
-    jev: null
+    jev: null,
+    embedding: null
   };
 }
 

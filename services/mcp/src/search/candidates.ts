@@ -1,9 +1,15 @@
 import type { ConnectGateway } from "../connect.js";
+import { GatewayOperationError } from "../errors.js";
 
 export const PRE_SCORE_WEIGHTS = { title: 3, description: 2, path: 2, body: 1 } as const;
 export const MAX_CANDIDATES = 30;
 export const QUERY_LIMIT = 300;
 export const MAX_TERMS = 8;
+/** Long terms that get a body query of their own in the reserve (the longest, ties by appearance). */
+export const BODY_TERMS = 8;
+/** Terms the exact-name search takes, and the time each term's body query gets. */
+export const MAX_EXACT_TERMS = 4;
+export const EXACT_TERMS_DEADLINE_MS = 1500;
 const LONG_TERM_MIN = 3;
 
 export interface Candidate {
@@ -60,111 +66,247 @@ function boundaryPattern(term: string): string {
   return `(^|${BOUNDARY_CLASS})${term}(${BOUNDARY_CLASS}|$)`;
 }
 
-function termExpression(term: string, withBody: boolean, whole: boolean): string {
-  const test = (field: string) => {
-    const lit = celString(whole ? boundaryPattern(term) : term);
-    return whole ? `${field}.lower().matches(${lit})` : `${field}.lower().contains(${lit})`;
-  };
-  const parts = [
-    `(has(raw.title) && ${test("raw.title")})`,
-    `(has(raw.description) && ${test("raw.description")})`,
-    test("file.path")
-  ];
-  if (withBody) parts.push(test("file.body"));
-  return parts.join(" || ");
+function test(field: string, term: string, whole: boolean): string {
+  const lit = celString(whole ? boundaryPattern(term) : term);
+  return whole ? `${field}.lower().matches(${lit})` : `${field}.lower().contains(${lit})`;
+}
+
+/** The body query for one term: nothing but this clause, so the runtime answers it
+ * from its FTS5 body index (any other clause in the expression makes it a scan). */
+export function bodyExpression(term: string): string {
+  return `file.body.lower().contains(${celString(term)})`;
+}
+
+/** Title, description and path for every term in one expression: long terms by
+ * substring, short ones as whole words. */
+export function metaExpression(long: string[], short: string[]): string {
+  const one = (term: string, whole: boolean) =>
+    [
+      `(has(raw.title) && ${test("raw.title", term, whole)})`,
+      `(has(raw.description) && ${test("raw.description", term, whole)})`,
+      test("file.path", term, whole)
+    ].join(" || ");
+  return [...long.map((t) => one(t, false)), ...short.map((t) => one(t, true))].join(" || ");
+}
+
+/** A folder as a path range ("0" follows "/"), which the body index accepts where
+ * `startsWith` would turn the body query into a scan. */
+export function folderRange(folder: string): string {
+  const base = folder.replace(/\/+$/, "");
+  return `(file.path >= ${celString(`${base}/`)} && file.path < ${celString(`${base}0`)})`;
 }
 
 type Field = keyof typeof PRE_SCORE_WEIGHTS;
 
-interface Row {
+/** What a query result says about a note: its path and the fields the candidates show. */
+interface Stored {
   path: string;
   title: string | null;
   description: string | null;
   types: string[];
   revision: string;
+}
+
+interface Row extends Stored {
   /** term -> fields it matched */
   matched: Map<string, Set<Field>>;
 }
 
-function matchedFields(term: string, whole: boolean, body: boolean, path: string, title: string | null, description: string | null): Set<Field> {
+function matchedFields(term: string, whole: boolean, path: string, title: string | null, description: string | null): Set<Field> {
   const re = whole ? new RegExp(boundaryPattern(term)) : null;
   const has = (text: string) => (re ? re.test(text.toLowerCase()) : text.toLowerCase().includes(term));
   const fields = new Set<Field>();
   if (title !== null && has(title)) fields.add("title");
   if (description !== null && has(description)) fields.add("description");
   if (has(path)) fields.add("path");
-  if (fields.size === 0 && body) fields.add("body");
   return fields;
 }
 
 const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
+/** The note a query result describes, or null when it has no path. */
+function storedOf(item: unknown): Stored | null {
+  const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
+  if (typeof r?.path !== "string") return null;
+  return {
+    path: r.path,
+    title: asText(r.frontmatter?.title),
+    description: asText(r.frontmatter?.description),
+    types: Array.isArray(r.types) ? r.types.filter((t): t is string => typeof t === "string") : [],
+    revision: typeof r.revision === "string" ? r.revision : ""
+  };
+}
+
+/** Runs a gateway read, trying once more when the authority answers `cursor_stale`. */
+export async function retryStale<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof GatewayOperationError && error.code === "cursor_stale") return read();
+    throw error;
+  }
+}
+
+type Filters = { types?: string[]; folder?: string };
+
+/** Reads through the gateway: one page of a query, and a term's whole body set. Shared by
+ * the candidate gatherers so each keeps the same query shape and cursor handling. */
+function queryReader(gateway: ConnectGateway, connectionSetId: string, connectionId: string, filters: Filters, signal?: AbortSignal) {
+  const run = async (where: string) => {
+    // Plain query, not `output: "metadata"`: the hosted authority refuses metadata output
+    // with a body condition (query_budget_exceeded) even for a handful of matches.
+    const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
+    if (filters.types && filters.types.length > 0) input.types = filters.types;
+    const page = (await retryStale(() => gateway.operation(connectionSetId, connectionId, "query", input, { signal }))) as
+      { results?: unknown; meta?: { has_more?: unknown; cursor?: unknown } | null } | null;
+    const more = page?.meta?.has_more === true || (typeof page?.meta?.cursor === "string" && page.meta.cursor !== "");
+    return { results: Array.isArray(page?.results) ? page.results : [], more };
+  };
+  // A term's whole body set, page by page, while it stays within QUERY_LIMIT notes; null when
+  // it is common (more than that, or more without a path to continue from). Pages continue
+  // by `file.path >` (results come in ascending path order), never by cursor: the mirror is
+  // written all the time and a query cursor expires.
+  const bodyOf = async (where: string): Promise<unknown[] | null> => {
+    const all: unknown[] = [];
+    let pageWhere = where;
+    for (;;) {
+      const page = await run(pageWhere);
+      all.push(...page.results);
+      if (!page.more) return all;
+      const last = (page.results[page.results.length - 1] as { path?: unknown } | undefined)?.path;
+      if (all.length >= QUERY_LIMIT || typeof last !== "string") return null;
+      pageWhere = `(${where}) && file.path > ${celString(last)}`;
+    }
+  };
+  return { run, bodyOf };
+}
+
+/** The title/description/path expression, narrowed to a folder by prefix. */
+function metaWhereOf(meta: string, folder?: string): string {
+  return folder ? `(${meta}) && file.path.startsWith(${celString(folder.endsWith("/") ? folder : `${folder}/`)})` : meta;
+}
+
+/** The body expression for one term, narrowed to a folder by path range. */
+function bodyWhereOf(term: string, folder?: string): string {
+  return folder ? `(${bodyExpression(term)}) && ${folderRange(folder)}` : bodyExpression(term);
+}
+
+/** A term's work races a timer: `done` with its value, or late (the timer won). */
+type WithinDeadline<T> = { done: true; value: T } | { done: false };
+
+function withinDeadline<T>(work: Promise<T>, ms: number): Promise<WithinDeadline<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<WithinDeadline<T>>((resolve) => {
+    timer = setTimeout(() => resolve({ done: false }), ms);
+  });
+  const done = work.then((value): WithinDeadline<T> => ({ done: true, value }));
+  return Promise.race([done, late]).finally(() => clearTimeout(timer));
+}
+
+export interface ExactPath {
+  title: string | null;
+  description: string | null;
+  types: string[];
+  revision: string;
+}
+
+/** Notes that hold the exact terms: one body query per long term (3 letters or more, through
+ * the index, following its cursor, nothing when common) and one title/description/path query
+ * with every term. Both run under `deadlineMs`: a late body drops its long term, and a late
+ * title/description/path query drops every short term; late results are discarded, and the rest
+ * still return. */
+export async function exactTermCandidates(
+  gateway: ConnectGateway,
+  connectionSetId: string,
+  connectionId: string,
+  terms: string[],
+  filters: Filters,
+  options: { deadlineMs: number; signal?: AbortSignal }
+): Promise<{ paths: Map<string, ExactPath>; dropped: string[] }> {
+  // Lowercased, with punctuation at the ends trimmed; empties and repeats go before the cap.
+  const normalized = terms.map((t) => t.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""));
+  const kept = [...new Set(normalized.filter((t) => t !== ""))].slice(0, MAX_EXACT_TERMS);
+  const paths = new Map<string, ExactPath>();
+  if (kept.length === 0) return { paths, dropped: [] };
+  const longTerms = kept.filter((t) => Array.from(t).length >= LONG_TERM_MIN);
+  const shortTerms = kept.filter((t) => Array.from(t).length < LONG_TERM_MIN);
+  const { run, bodyOf } = queryReader(gateway, connectionSetId, connectionId, filters, options.signal);
+  // The title/description/path query is the only source for short terms, so it runs under the same deadline.
+  const metaQuery = withinDeadline(run(metaWhereOf(metaExpression(longTerms, shortTerms), filters.folder)), options.deadlineMs);
+  const bodyQueries = longTerms.map((term) => withinDeadline(bodyOf(bodyWhereOf(term, filters.folder)), options.deadlineMs));
+  const [meta, ...bodies] = await Promise.all([metaQuery, ...bodyQueries]);
+
+  const add = (item: unknown) => {
+    const stored = storedOf(item);
+    if (stored && !paths.has(stored.path)) {
+      paths.set(stored.path, { title: stored.title, description: stored.description, types: stored.types, revision: stored.revision });
+    }
+  };
+  // A late query's results are discarded: a late meta query drops every short term, a late body drops its long term.
+  if (meta.done) meta.value.results.forEach(add);
+  const bodyByTerm = new Map(longTerms.map((term, i) => [term, bodies[i]]));
+  const dropped = kept.filter((term) => {
+    const body = bodyByTerm.get(term);
+    return body ? !body.done : !meta.done;
+  });
+  for (const body of bodies) {
+    if (body.done && body.value !== null) body.value.forEach(add);
+  }
+  return { paths, dropped };
+}
+
+/** Candidates from one body query per long term (the BODY_TERMS longest, through the
+ * FTS5 index, following its cursor) and one title/description/path query, sent
+ * together. A term with more than QUERY_LIMIT body notes is common: its body is
+ * dropped, since any slice of it is a path-ordered sample. */
 export async function gatherCandidates(
   gateway: ConnectGateway,
   connectionSetId: string,
   connectionId: string,
   query: string,
-  filters: { types?: string[]; folder?: string },
+  filters: Filters,
   signal?: AbortSignal
 ): Promise<{ candidates: Candidate[]; total: number }> {
   const { long, short } = searchTerms(query);
-  const folderCondition = filters.folder
-    ? `file.path.startsWith(${celString(filters.folder.endsWith("/") ? filters.folder : `${filters.folder}/`)})`
-    : null;
-  const jobs = [...long.map((term) => ({ term, short: false })), ...short.map((term) => ({ term, short: true }))];
+  if (long.length === 0 && short.length === 0) return { candidates: [], total: 0 };
 
-  if (jobs.length === 0) return { candidates: [], total: 0 };
-
-  const run = async (term: string, isShort: boolean, withBody: boolean) => {
-    const expression = termExpression(term, withBody, isShort);
-    const where = folderCondition ? `(${expression}) && ${folderCondition}` : expression;
-    // Plain query, not `output: "metadata"`: the hosted authority refuses metadata output
-    // with a body condition (query_budget_exceeded) even for a handful of matches.
-    const input: Record<string, unknown> = { where, limit: QUERY_LIMIT };
-    if (filters.types && filters.types.length > 0) input.types = filters.types;
-    const page = (await gateway.operation(connectionSetId, connectionId, "query", input, { signal })) as
-      { results?: unknown; meta?: { has_more?: unknown; cursor?: unknown } | null } | null;
-    const more = page?.meta?.has_more === true || (typeof page?.meta?.cursor === "string" && page.meta.cursor !== "");
-    return { results: page?.results, more };
-  };
-
-  const pages = await Promise.all(
-    jobs.map(async ({ term, short: isShort }) => {
-      let page = await run(term, isShort, !isShort);
-      let body = !isShort;
-      // A term with more matches than one page is common: the body clause would only
-      // add noise, so ask again over title, description and path alone.
-      if (!isShort && page.more) {
-        page = await run(term, false, false);
-        body = false;
-      }
-      return { term, whole: isShort, body, results: page.results };
-    })
-  );
+  const { run, bodyOf } = queryReader(gateway, connectionSetId, connectionId, filters, signal);
+  const metaWhere = metaWhereOf(metaExpression(long, short), filters.folder);
+  const bodyTerms = long
+    .map((term, at) => ({ term, at, len: Array.from(term).length }))
+    .sort((x, y) => y.len - x.len || x.at - y.at)
+    .slice(0, BODY_TERMS)
+    .map((t) => t.term);
+  const [metaPage, ...bodySets] = await Promise.all([run(metaWhere), ...bodyTerms.map((term) => bodyOf(bodyWhereOf(term, filters.folder)))]);
 
   const rows = new Map<string, Row>();
-  for (const { term, whole, body, results } of pages) {
-    if (!Array.isArray(results)) continue;
-    for (const item of results) {
-      const r = item as { path?: unknown; types?: unknown; revision?: unknown; frontmatter?: { title?: unknown; description?: unknown } | null };
-      if (typeof r?.path !== "string") continue;
-      const title = asText(r.frontmatter?.title);
-      const description = asText(r.frontmatter?.description);
-      let row = rows.get(r.path);
-      if (!row) {
-        row = {
-          path: r.path,
-          title,
-          description,
-          types: Array.isArray(r.types) ? r.types.filter((t): t is string => typeof t === "string") : [],
-          revision: typeof r.revision === "string" ? r.revision : "",
-          matched: new Map()
-        };
-        rows.set(r.path, row);
-      }
-      row.matched.set(term, matchedFields(term, whole, body, r.path, row.title, row.description));
+  const rowFor = (item: unknown) => {
+    const stored = storedOf(item);
+    if (!stored) return null;
+    let row = rows.get(stored.path);
+    if (!row) {
+      row = { ...stored, matched: new Map() };
+      rows.set(stored.path, row);
+    }
+    return row;
+  };
+  for (const item of metaPage.results) {
+    const row = rowFor(item);
+    if (!row) continue;
+    for (const [term, whole] of [...long.map((t) => [t, false] as const), ...short.map((t) => [t, true] as const)]) {
+      const fields = matchedFields(term, whole, row.path, row.title, row.description);
+      if (fields.size > 0) row.matched.set(term, fields);
     }
   }
+  bodySets.forEach((set, i) => {
+    if (set === null) return;
+    const term = bodyTerms[i];
+    for (const item of set) {
+      const row = rowFor(item);
+      // The body counts for a term only where the term matched nothing else.
+      if (row && !row.matched.has(term)) row.matched.set(term, new Set<Field>(["body"]));
+    }
+  });
 
   const candidates: Candidate[] = [];
   for (const row of rows.values()) {
