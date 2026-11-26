@@ -1,7 +1,5 @@
 import { ANY_INDEX_INSTRUCTIONS, CANDIDATE_CRITERIA, CANDIDATE_INSTRUCTIONS, PICK_INDEX_INSTRUCTIONS } from "./jev-questions.js";
 
-const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
-
 export interface JevRankInput {
   query: string;
   candidates: Array<{ path: string; title: string | null; description: string | null; excerpt: string | null }>;
@@ -27,13 +25,13 @@ export class JevError extends Error {
   }
 }
 
-export function createJevClient(config: { apiKey: string; model: string }, fetchImpl: typeof fetch = fetch): JevClient {
+export function createJevClient(config: { apiKey: string; model: string; endpoint: string }, fetchImpl: typeof fetch = fetch): JevClient {
   return {
     async rank(input, signal) {
       const { body, optionPaths } = buildRequest(config.model, input);
       let response: Response;
       try {
-        response = await fetchImpl(ENDPOINT, {
+        response = await fetchImpl(config.endpoint, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` },
           body: JSON.stringify(body),

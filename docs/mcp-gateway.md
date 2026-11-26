@@ -162,6 +162,9 @@ testing those hosts.
 | `HOST`, `PORT` | Listener address; defaults are `127.0.0.1:8790` |
 | `MDBASE_MCP_CALL_LOG_RETENTION_DAYS` | Days the call log is kept; default `30`, range 1–365 |
 | `MDBASE_MCP_CALL_LOG_QUERY_TEXT_COLLECTIONS` | Comma-separated collection IDs whose `query_records` `where` text is recorded; default empty (never recorded) |
+| `MDBASE_MCP_TYPESAFE_API_KEY` | Key for Jev, which ranks `search_records` results; empty turns Jev off and the search keeps its simple order. A TypeSafe key, or an OpenRouter key when the endpoint is OpenRouter's |
+| `MDBASE_MCP_JEV_ENDPOINT` | HTTPS URL of the System One API; default `https://api.typesafe.ai/v1/systemone`. Through OpenRouter: `https://openrouter.ai/api/v1/systemone` |
+| `MDBASE_MCP_JEV_MODEL` | Jev model; default `jev-1.14.0`. Through OpenRouter the name carries the prefix, as in `typesafe/jev-1.14` |
 
 The master key is not recoverable from the database. Back it up in the hosting
 provider's secret store. Rotating it without a credential re-encryption
