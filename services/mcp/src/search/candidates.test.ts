@@ -3,7 +3,7 @@ import type { ConnectGateway } from "../connect.js";
 import { MAX_CANDIDATES, bodyExpression, folderRange, gatherCandidates, metaExpression, searchTerms } from "./candidates.js";
 
 type Row = { path: string; types?: string[]; revision?: string; frontmatter?: Record<string, unknown> };
-const isBodyWhere = (where: string) => where.startsWith("file.body.lower().contains(");
+const isBodyWhere = (where: string) => where.replace(/^\(/, "").startsWith("file.body.lower().contains(");
 /** Two queries: the body query (index) gets `body`, the title/description/path one gets `meta`. */
 function fake(lists: { body?: Row[]; meta?: Row[]; bodyMeta?: Record<string, unknown> }) {
   const operation = vi.fn(async (_s: string, _c: string, _op: string, input: { where: string }) => {
@@ -104,10 +104,16 @@ describe("gatherCandidates", () => {
     const { gateway, operation } = fake({});
     await gatherCandidates(gateway, "s", "c", "nota", { types: ["task"], folder: "13-engenharia" });
     const body = bodyWhere(operation) as string;
-    expect(body).toBe('file.body.lower().contains("nota") && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")');
+    expect(body).toBe('(file.body.lower().contains("nota")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")');
     expect(body).not.toContain("startsWith");
     expect(metaWhere(operation)).toContain('file.path.startsWith("13-engenharia/")');
     for (const c of operation.mock.calls) expect((c[3] as unknown as { types: string[] }).types).toEqual(["task"]);
+  });
+
+  it("pasta vale para todos os termos do corpo, não só o último", async () => {
+    const { gateway, operation } = fake({});
+    await gatherCandidates(gateway, "s", "c", "fatura cartão", { folder: "13-engenharia" });
+    expect(bodyWhere(operation)).toBe('(file.body.lower().contains("fatura") || file.body.lower().contains("cartão")) && (file.path >= "13-engenharia/" && file.path < "13-engenharia0")');
   });
 
   it("escapa aspas e barras do literal da pasta", async () => {

@@ -141,7 +141,7 @@ export async function gatherCandidates(
   const metaWhere = filters.folder
     ? `(${meta}) && file.path.startsWith(${celString(filters.folder.endsWith("/") ? filters.folder : `${filters.folder}/`)})`
     : meta;
-  const bodyWhere = long.length === 0 ? null : filters.folder ? `${bodyExpression(long)} && ${folderRange(filters.folder)}` : bodyExpression(long);
+  const bodyWhere = long.length === 0 ? null : filters.folder ? `(${bodyExpression(long)}) && ${folderRange(filters.folder)}` : bodyExpression(long);
   const [metaResults, bodyResults] = await Promise.all([run(metaWhere), bodyWhere === null ? Promise.resolve([]) : run(bodyWhere)]);
 
   const rows = new Map<string, Row & { body: boolean }>();
